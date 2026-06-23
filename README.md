@@ -55,16 +55,16 @@ cd ~/clients/acme && ccc-acme
 
 First run, complete `/login` once; the volume keeps you authenticated after that. The generic form is `ccc-run <name>` if you don't want a wrapper.
 
-Capsules default to `4g` of memory and `2` CPUs. Override those limits with environment variables:
+Capsules default to `4g` of memory and `2` CPUs. Override those limits with environment variables — though they can't exceed what Docker Desktop allocates to its VM (Settings → Resources):
 
 ```
-CCC_MEMORY=8g CCC_CPUS=6 ccc-acme
+CCC_MEMORY=8g CCC_CPUS=2 ccc-acme
 ```
 
 For per-identity defaults, put them in your local wrapper:
 
 ```
-ccc-acme() { CCC_MEMORY=8g CCC_CPUS=4 ccc-run acme "$@"; }
+ccc-acme() { CCC_MEMORY=8g CCC_CPUS=2 ccc-run acme "$@"; }
 ```
 
 You can also pass extra Docker run args after the identity name or wrapper:

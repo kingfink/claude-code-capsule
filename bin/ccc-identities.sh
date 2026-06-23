@@ -14,8 +14,10 @@ ccc-run() {
   done
   [[ "$has_memory_arg" == 0 ]] && resource_args+=(--memory "${CCC_MEMORY:-4g}")
   [[ "$has_cpus_arg" == 0 ]] && resource_args+=(--cpus "${CCC_CPUS:-2}")
+  local repo_root="${functions_source[ccc-run]:A:h:h}"
   case "$PWD" in
     "$HOME"|/) echo "ccc-run: refusing to mount $PWD — cd into a project dir first" >&2; return 1 ;;
+    "$repo_root") echo "ccc-run: refusing to mount the capsule repo ($PWD) — cd into a project dir first" >&2; return 1 ;;
   esac
   docker run -it --rm \
     --cap-drop=ALL \

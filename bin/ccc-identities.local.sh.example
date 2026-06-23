@@ -1,0 +1,4 @@
+# Copy to ccc-identities.local.sh and add your real wrappers.
+# That file is gitignored, so real identity names never get committed.
+ccc-acme()   { ccc-run acme   "$@"; }
+ccc-myself() { ccc-run myself "$@"; }

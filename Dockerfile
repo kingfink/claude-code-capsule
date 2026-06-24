@@ -12,6 +12,8 @@ RUN mkdir -p /home/node/.claude && chown -R node:node /home/node/.claude
 USER node
 
 ENV CLAUDE_CONFIG_DIR=/home/node/.claude
-WORKDIR /workspace
+
+# The launch directory is bind-mounted at /<its basename> and ccc-run sets the
+# working dir to match at runtime (docker run -w), so no WORKDIR is set here.
 
 CMD ["claude"]

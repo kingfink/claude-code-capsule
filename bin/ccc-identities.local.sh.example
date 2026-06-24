@@ -2,3 +2,13 @@
 # That file is gitignored, so real identity names never get committed.
 ccc-acme()   { ccc-run acme   "$@"; }
 ccc-myself() { ccc-run myself "$@"; }
+
+# To give an identity its own environment variables inside the capsule, keep a
+# per-identity env file outside the repo and point the wrapper at it with
+# --env-file (a native docker flag that ccc-run forwards through):
+#
+#   ccc-acme() { ccc-run acme --env-file "$HOME/.config/ccc/acme.env" "$@"; }
+#
+# The env file is plain KEY=value lines (not a shell script): no `export`, no
+# $VAR expansion, quotes are literal. A bare KEY with no `=` passes that var's
+# value through from your host shell. The named file must exist at launch.

@@ -19,12 +19,16 @@ ccc-run() {
     "$HOME"|/) echo "ccc-run: refusing to mount $PWD — cd into a project dir first" >&2; return 1 ;;
     "$repo_root") echo "ccc-run: refusing to mount the capsule repo ($PWD) — cd into a project dir first" >&2; return 1 ;;
   esac
+  # Mount the launch directory at /<its basename> (and start there) so the path
+  # inside the capsule mirrors the folder you came from, e.g. ~/proj/folder_a -> /folder_a.
+  local mount="/${PWD:t}"
   docker run -it --rm \
     --cap-drop=ALL \
     --security-opt=no-new-privileges \
     --pids-limit=512 \
     "${resource_args[@]}" \
-    -v "$(pwd):/workspace" \
+    -v "$(pwd):$mount" \
+    -w "$mount" \
     -v "ccc-${name}-config:/home/node/.claude" \
     "$@" \
     ccc

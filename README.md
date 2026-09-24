@@ -99,6 +99,27 @@ The env file is **plain `KEY=value` lines, not a shell script**: no `export`, no
 
 For a value common to *every* identity and not secret, add an `ENV` line to the `Dockerfile` and rebuild with `ccc-build` instead — but never put secrets there, since image layers are readable and shared across all identities.
 
+### Bundled CLIs: GitHub and Omni
+
+The image includes `gh` and the [Omni CLI](https://github.com/exploreomni/cli) on PATH. Both read credentials from the identity's env file, and anything else under `/home/node` outside the identity volume is wiped each run, so configure them through the wrapper rather than inside the capsule:
+
+```
+# ~/.config/ccc/acme.env
+GH_TOKEN=github_pat_...          # fine-grained PAT limited to the repos this identity needs
+GIT_AUTHOR_NAME=Your Name
+GIT_AUTHOR_EMAIL=you@example.com
+GIT_COMMITTER_NAME=Your Name
+GIT_COMMITTER_EMAIL=you@example.com
+OMNI_API_TOKEN=...
+```
+
+`git push` over HTTPS authenticates through `gh` using `GH_TOKEN`. Omni's API endpoint only comes from its config file, so keep one on the host (profile and `apiEndpoint`, no `apiKey`) and mount it read-only:
+
+```
+ccc-acme() { ccc-run acme --env-file "$HOME/.config/ccc/acme.env" \
+  -v "$HOME/.config/ccc/acme-omni.json:/home/node/.config/omni-cli/config.json:ro" "$@"; }
+```
+
 ### Getting a shell inside the capsule
 
 Capsules launch `claude` by default. To open a plain shell instead — same identity volume, same read-write mount of your launch directory, running as the non-root `node` user — override the entrypoint:

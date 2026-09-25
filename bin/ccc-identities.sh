@@ -4,7 +4,7 @@ ccc-run() {
     return 1
   fi
   local name="$1"; shift
-  # Args after "--" replace the default command (claude), e.g. `-- omni whoami whoami`.
+  # Args after "--" replace the default command (claude), e.g. `-- omni whoami`.
   local -a docker_args cmd_args
   local sep=${@[(i)--]}
   docker_args=("${@[1,sep-1]}")

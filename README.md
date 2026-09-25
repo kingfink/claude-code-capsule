@@ -132,7 +132,7 @@ Capsules launch `claude` by default. Anything after `--` replaces that command â
 
 ```
 ccc-acme -- bash                      # interactive shell
-ccc-acme -- omni whoami whoami        # one command, then exit
+ccc-acme -- omni whoami               # one command, then exit
 ccc-acme -- bash -c 'which omni && gh auth status'
 ```
 

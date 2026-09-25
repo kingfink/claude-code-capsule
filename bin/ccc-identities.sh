@@ -1,12 +1,17 @@
 ccc-run() {
   if [[ -z "$1" ]]; then
-    echo "usage: ccc-run <name> [extra docker args...]" >&2
+    echo "usage: ccc-run <name> [extra docker args...] [-- command...]" >&2
     return 1
   fi
   local name="$1"; shift
+  # Args after "--" replace the default command (claude), e.g. `-- omni whoami whoami`.
+  local -a docker_args cmd_args
+  local sep=${@[(i)--]}
+  docker_args=("${@[1,sep-1]}")
+  (( sep <= $# )) && cmd_args=("${@[sep+1,-1]}")
   local -a resource_args
   local arg has_memory_arg=0 has_cpus_arg=0
-  for arg in "$@"; do
+  for arg in "${docker_args[@]}"; do
     case "$arg" in
       --memory|--memory=*|-m|-m*) has_memory_arg=1 ;;
       --cpus|--cpus=*) has_cpus_arg=1 ;;
@@ -30,8 +35,8 @@ ccc-run() {
     -v "$(pwd):$mount" \
     -w "$mount" \
     -v "ccc-${name}-config:/home/node/.claude" \
-    "$@" \
-    ccc
+    "${docker_args[@]}" \
+    ccc "${cmd_args[@]}"
 }
 
 # Build (or rebuild) the image, then sweep the now-dangling previous image and

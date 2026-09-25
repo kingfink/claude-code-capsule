@@ -124,23 +124,17 @@ mv ~/.local/bin/omni ~/.claude/bin/
 
 Tools that honor `XDG_CONFIG_HOME` (Omni does) then keep their config in the volume too. Note the volume is writable from inside the capsule, so Claude can modify these tools.
 
-### Getting a shell inside the capsule
+### Running a shell or one-off command
 
-Capsules launch `claude` by default. To open a plain shell instead — same identity volume, same read-write mount of your launch directory, running as the non-root `node` user — override the entrypoint:
-
-```
-ccc-acme --entrypoint bash
-```
-
-This works because `--entrypoint` is a flag that lands before the image name, which is where `ccc-run` forwards extra args (appending a bare `bash` after the wrapper would *not* work — the passthrough sits before the image, so an override command wouldn't reach the right position). Use `sh` if you prefer.
-
-If you do this often, add a helper to your local `ccc-identities.local.sh`:
+Capsules launch `claude` by default. Anything after `--` replaces that command — same identity volume, same read-write mount of your launch directory, running as the non-root `node` user:
 
 ```
-ccc-shell() { ccc-run "$1" --entrypoint bash "${@:2}"; }
+ccc-acme -- bash                      # interactive shell
+ccc-acme -- omni whoami whoami        # one command, then exit
+ccc-acme -- bash -c 'which omni && gh auth status'
 ```
 
-Then `ccc-shell acme` opens a shell for any identity.
+Docker flags still go before the `--`, e.g. `ccc-acme --memory=8g -- bash`.
 
 ## Notes
 

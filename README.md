@@ -138,6 +138,21 @@ ccc-acme -- bash -c 'which omni && gh auth status'
 
 Docker flags still go before the `--`, e.g. `ccc-acme --memory=8g -- bash`.
 
+### Auto mode (experimental)
+
+`ccc-run-auto` runs Claude in [auto mode](https://code.claude.com/docs/en/permission-modes) on a throwaway clone of the current repo, with a throwaway copy of the identity. When Claude exits, you get the changes as a patch and are asked whether to apply it. **Outbound network is not restricted yet**, so it requires `CCC_EXPERIMENTAL_AUTO=1`. Rebuild the image with `ccc-build` first.
+
+It takes an env file that must set `ANTHROPIC_API_KEY`; the identity's OAuth login is not used, and secret-looking variables are refused. Run it from a clean checkout:
+
+```
+ccc-acme-auto() { CCC_EXPERIMENTAL_AUTO=1 ccc-run-auto acme-auto "$HOME/.config/ccc/acme-auto.env" "$@"; }
+
+ccc-acme-auto                                            # auto mode
+ccc-acme-auto -- claude --dangerously-skip-permissions   # no permission checks at all
+```
+
+If you decline the patch, or the export fails, `ccc-auto-apply <run-id>` picks it up later. Nothing is ever committed for you. Gitignored files and submodules aren't carried into the clone, LFS files arrive as pointers, and Claude's commits arrive as one patch. Applying runs the patch through your git setup like any incoming change, so read it first if the repo uses custom filters. `CCC_MEMORY` and `CCC_CPUS` apply as for `ccc-run`. After a crash, remove leftovers with `docker volume rm $(docker volume ls -q --filter label=ccc.auto=1)`.
+
 ## Notes
 
 - **zsh only.** The wrapper-loading uses zsh syntax; source it from `~/.zshrc`, not bash.

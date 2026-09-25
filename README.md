@@ -99,26 +99,30 @@ The env file is **plain `KEY=value` lines, not a shell script**: no `export`, no
 
 For a value common to *every* identity and not secret, add an `ENV` line to the `Dockerfile` and rebuild with `ccc-build` instead — but never put secrets there, since image layers are readable and shared across all identities.
 
-### Bundled CLIs: GitHub and Omni
+### GitHub access
 
-The image includes `gh` and the [Omni CLI](https://github.com/exploreomni/cli) on PATH. Both read credentials from the identity's env file, and anything else under `/home/node` outside the identity volume is wiped each run, so configure them through the wrapper rather than inside the capsule:
+The image includes `gh`, and `git push` over HTTPS authenticates through it. Give an identity access by adding a token (ideally a fine-grained PAT limited to the repos it needs) and a commit identity to its env file:
 
 ```
 # ~/.config/ccc/acme.env
-GH_TOKEN=github_pat_...          # fine-grained PAT limited to the repos this identity needs
+GH_TOKEN=github_pat_...
 GIT_AUTHOR_NAME=Your Name
 GIT_AUTHOR_EMAIL=you@example.com
 GIT_COMMITTER_NAME=Your Name
 GIT_COMMITTER_EMAIL=you@example.com
-OMNI_API_TOKEN=...
 ```
 
-`git push` over HTTPS authenticates through `gh` using `GH_TOKEN`. Omni's API endpoint only comes from its config file, so keep one on the host (profile and `apiEndpoint`, no `apiKey`) and mount it read-only:
+### Per-identity tools
+
+For client-specific CLIs, install them into the identity volume rather than the image. `~/.claude/bin` is on PATH and `XDG_CONFIG_HOME` points at `~/.claude/xdg-config`, both inside the volume, so a tool and its config persist for that identity only. From a capsule shell:
 
 ```
-ccc-acme() { ccc-run acme --env-file "$HOME/.config/ccc/acme.env" \
-  -v "$HOME/.config/ccc/acme-omni.json:/home/node/.config/omni-cli/config.json:ro" "$@"; }
+mkdir -p ~/.claude/bin
+curl -fsSL https://raw.githubusercontent.com/exploreomni/cli/main/install.sh | sh
+mv ~/.local/bin/omni ~/.claude/bin/
 ```
+
+Tools that honor `XDG_CONFIG_HOME` (Omni does) then keep their config in the volume too. Note the volume is writable from inside the capsule, so Claude can modify these tools.
 
 ### Getting a shell inside the capsule
 

@@ -1,4 +1,5 @@
 .git
 bin/ccc-identities.local.sh
+setup
 README.md
 LICENSE

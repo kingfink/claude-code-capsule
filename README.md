@@ -99,28 +99,49 @@ The env file is **plain `KEY=value` lines, not a shell script**: no `export`, no
 
 For a value common to *every* identity and not secret, add an `ENV` line to the `Dockerfile` and rebuild with `ccc-build` instead — but never put secrets there, since image layers are readable and shared across all identities.
 
-### Getting a shell inside the capsule
+### GitHub access
 
-Capsules launch `claude` by default. To open a plain shell instead — same identity volume, same read-write mount of your launch directory, running as the non-root `node` user — override the entrypoint:
-
-```
-ccc-acme --entrypoint bash
-```
-
-This works because `--entrypoint` is a flag that lands before the image name, which is where `ccc-run` forwards extra args (appending a bare `bash` after the wrapper would *not* work — the passthrough sits before the image, so an override command wouldn't reach the right position). Use `sh` if you prefer.
-
-If you do this often, add a helper to your local `ccc-identities.local.sh`:
+The image includes `gh`, and `git push` over HTTPS authenticates through it. Give an identity access by adding a token (ideally a fine-grained PAT limited to the repos it needs) and a commit identity to its env file:
 
 ```
-ccc-shell() { ccc-run "$1" --entrypoint bash "${@:2}"; }
+# ~/.config/ccc/acme.env
+GH_TOKEN=github_pat_...
+GIT_AUTHOR_NAME=Your Name
+GIT_AUTHOR_EMAIL=you@example.com
+GIT_COMMITTER_NAME=Your Name
+GIT_COMMITTER_EMAIL=you@example.com
 ```
 
-Then `ccc-shell acme` opens a shell for any identity.
+### Per-identity tools
+
+For client-specific CLIs, install them into the identity volume rather than the image. `~/.claude/bin` is on PATH and `XDG_CONFIG_HOME` points at `~/.claude/xdg-config`, both inside the volume, so a tool and its config persist for that identity only.
+
+To install automatically, give the identity a setup script. It's gitignored like your wrappers:
+
+```
+cp setup/example.sh.example setup/acme.sh
+```
+
+`ccc-run` mounts `setup/<name>.sh` and the capsule runs it at every launch, before Claude starts, so keep it idempotent (the example only installs what's missing). Keep secrets in the env file, not here.
+
+To upgrade, delete the binary (`ccc-acme -- rm ~/.claude/bin/omni`) and the next launch reinstalls it. Tools that honor `XDG_CONFIG_HOME` (Omni does) keep their config in the volume too. Note the volume is writable from inside the capsule, so Claude can modify these tools.
+
+### Running a shell or one-off command
+
+Capsules launch `claude` by default. Anything after `--` replaces that command — same identity volume, same read-write mount of your launch directory, running as the non-root `node` user:
+
+```
+ccc-acme -- bash                      # interactive shell
+ccc-acme -- omni whoami whoami        # one command, then exit
+ccc-acme -- bash -c 'which omni && gh auth status'
+```
+
+Docker flags still go before the `--`, e.g. `ccc-acme --memory=8g -- bash`.
 
 ## Notes
 
 - **zsh only.** The wrapper-loading uses zsh syntax; source it from `~/.zshrc`, not bash.
 - **Updates need a rebuild.** Containers run `--rm`, so any in-container auto-update is discarded. Run `ccc-build` to get a newer Claude Code — it rebuilds the image and clears the now-dangling old image and build cache so they don't accumulate. (Identity volumes are never touched.)
-- **No git/SSH identity inside.** Capsules don't carry your git config or SSH keys, so commits and pushes from inside won't be authored or authenticated as you. Mount them yourself if you need to (e.g. add `-v ~/.gitconfig:/home/node/.gitconfig:ro`).
+- **No git/SSH identity by default.** Capsules don't carry your git config or SSH keys. For HTTPS pushes and commit authorship, set it per identity as in [GitHub access](#github-access).
 - **Light hardening only.** Capsules drop Linux capabilities, prevent new privileges, and cap process count, but the project directory is still mounted read-write.
 

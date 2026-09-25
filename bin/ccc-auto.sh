@@ -1,7 +1,7 @@
 # Experimental auto mode: run `claude --dangerously-skip-permissions` against a
 # throwaway copy of the current git checkout and of the identity volume, and
 # bring the work back only as a patch that ccc-auto-apply applies after review.
-# Sourced by ccc-identities.sh. See docs/auto-mode.md.
+# Sourced by ccc-identities.sh. See "Auto mode" in the README.
 #
 # Outbound network is NOT restricted yet, so ccc-run-auto is gated behind
 # CCC_EXPERIMENTAL_AUTO=1.

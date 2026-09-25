@@ -138,6 +138,21 @@ ccc-acme -- bash -c 'which omni && gh auth status'
 
 Docker flags still go before the `--`, e.g. `ccc-acme --memory=8g -- bash`.
 
+### Auto mode (experimental)
+
+`ccc-run-auto` runs `claude --dangerously-skip-permissions` on a throwaway clone of the current repo, with a throwaway copy of the identity. The only thing that comes back is a patch for you to review. **Outbound network is not restricted yet**, so it requires `CCC_EXPERIMENTAL_AUTO=1`.
+
+Give it an env file containing only an API key, then run it from a clean checkout:
+
+```
+ccc-acme-auto() { CCC_EXPERIMENTAL_AUTO=1 ccc-run-auto acme-auto --env-file "$HOME/.config/ccc/acme-auto.env" "$@"; }
+
+ccc-acme-auto      # Claude works on the scratch clone
+ccc-auto-apply     # review the report, apply the patch (nothing is committed)
+```
+
+Gitignored files, submodules and LFS objects aren't carried into the clone. Commits Claude makes arrive as a single patch. `ccc-auto-gc` cleans up after crashes. Opt-in overrides: `CCC_AUTO_ALLOW_OAUTH=1` (no API key), `CCC_AUTO_ALLOW_SECRETS=1`, `CCC_AUTO_ALLOW_LIVE_COPY=1`.
+
 ## Notes
 
 - **zsh only.** The wrapper-loading uses zsh syntax; source it from `~/.zshrc`, not bash.

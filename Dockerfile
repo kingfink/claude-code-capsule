@@ -12,8 +12,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends gh \
   && git config --system credential.helper '!gh auth git-credential'
 
 # node:22 ships a non-root "node" user. Create its config dir, chown it, and run
-# as node so Claude never runs as root.
-RUN mkdir -p /home/node/.claude && chown -R node:node /home/node/.claude
+# as node so Claude never runs as root. An empty volume first mounted over one
+# of these dirs takes its owner; ccc-run-auto relies on that for /workspace.
+RUN mkdir -p /home/node/.claude /workspace && chown -R node:node /home/node/.claude /workspace
 COPY --chmod=755 bin/ccc-entrypoint.sh /usr/local/bin/ccc-entrypoint
 USER node
 

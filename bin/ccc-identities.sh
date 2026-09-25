@@ -52,7 +52,7 @@ ccc-build() {
 
 _ccc_identities_dir="${${(%):-%x}:A:h}"
 
-# Experimental auto mode (ccc-run-auto, ccc-auto-apply, ccc-auto-gc).
+# Experimental auto mode (ccc-run-auto, ccc-auto-apply).
 source "$_ccc_identities_dir/ccc-auto.sh"
 
 # Real per-identity wrappers live in an untracked file next to this one.

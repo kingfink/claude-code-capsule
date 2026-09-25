@@ -7,7 +7,7 @@
 # Outbound network is NOT restricted yet, so ccc-run-auto is gated behind
 # CCC_EXPERIMENTAL_AUTO=1.
 
-# Variables ccc-run-auto sets or relies on; env files and -e can't override them.
+# Variables ccc-run-auto sets or relies on; the env file can't override them.
 _ccc_auto_reserved_env=(
   HOME PATH CLAUDE_CONFIG_DIR XDG_CONFIG_HOME ANTHROPIC_BASE_URL
   HTTP_PROXY HTTPS_PROXY NO_PROXY ALL_PROXY http_proxy https_proxy no_proxy all_proxy
@@ -23,11 +23,15 @@ ccc-auto-apply() {
   emulate -L zsh
   autoload -Uz is-at-least
   local run_id="${1:-}"
+  if [[ ! "$run_id" =~ '^[0-9]{8}-[0-9]{6}-[a-z0-9]{6}$' ]]; then
+    print -u2 "usage: ccc-auto-apply <run-id>   (runs live in $(_ccc_auto_data_root))"
+    return 1
+  fi
   local run_dir="$(_ccc_auto_data_root)/$run_id"
   local root="${functions_source[ccc-auto-apply]:A:h:h}"
   local patch="$run_dir/changes.patch" repo_vol="ccc-auto-${run_id}-repo" top start
-  if [[ -z "$run_id" || ! -f "$run_dir/start" ]]; then
-    print -u2 "usage: ccc-auto-apply <run-id>   (runs live in $(_ccc_auto_data_root))"
+  if [[ ! -f "$run_dir/start" ]]; then
+    print -u2 "ccc-auto-apply: no run $run_id"
     return 1
   fi
   start="$(<"$run_dir/start")"
@@ -49,7 +53,7 @@ ccc-auto-apply() {
       --entrypoint sh ccc /ccc/export.sh > "$patch.tmp" && mv "$patch.tmp" "$patch" || {
       rm -f "$patch.tmp"
       print -u2 "ccc-auto-apply: export failed; kept scratch volume $repo_vol"
-      print -u2 "ccc-auto-apply: retry with: ccc-auto-apply $run_id   (ccc-auto-gc removes it)"
+      print -u2 "ccc-auto-apply: retry with: ccc-auto-apply $run_id"
       return 1
     }
     docker volume rm "$repo_vol" >/dev/null
@@ -62,7 +66,6 @@ ccc-auto-apply() {
   fi
   print
   git apply --stat --summary "$patch" || return 1
-  print "Patch: $patch"
   print
 
   local later="ccc-auto-apply: apply later from the repo with: ccc-auto-apply $run_id"
@@ -71,7 +74,8 @@ ccc-auto-apply() {
   # macOS filesystems are usually case-insensitive.
   if git apply --numstat "$patch" | cut -f3- | grep -qiE '(^"?|/)\.gitattributes"?$'; then
     print -u2 "ccc-auto-apply: the patch changes .gitattributes, which picks the filter and diff commands"
-    print -u2 "ccc-auto-apply: your git runs. Review it and apply it by hand if you trust it: git apply $patch"
+    print -u2 "ccc-auto-apply: your git runs. Review it and apply it by hand if you trust it:"
+    print -u2 "  git apply ${(q-)patch}"
     return 1
   fi
   # Older git apply can write through symlinks (CVE-2023-23946).
@@ -94,6 +98,7 @@ ccc-auto-apply() {
     print -u2 "ccc-auto-apply: patch does not apply cleanly"
     return 1
   fi
+  print "Read the full patch first: ${(q-)patch}"
   if ! read -q "?Apply these changes to $top? [y/N] "; then
     print
     print "$later"
@@ -113,89 +118,47 @@ ccc-run-auto() {
     print -u2 "and your source code can leave the capsule. Set CCC_EXPERIMENTAL_AUTO=1 to use it anyway."
     return 1
   fi
-  if [[ -z "${1:-}" || "$1" == -* ]]; then
-    print -u2 "usage: ccc-run-auto <name> [--memory X] [--cpus N] [--env-file F] [-e K[=V]] [-- command...]"
+  if (( $# < 2 )) || [[ -n "${3:-}" && "$3" != -- ]]; then
+    print -u2 "usage: ccc-run-auto <name> <env-file> [-- command...]"
     return 1
   fi
-  local name="$1"; shift
+  local name="$1" env_file="${2:A}"
+  local -a cmd_args=("${@[4,-1]}")
   if [[ ! "$name" =~ '^[A-Za-z0-9][A-Za-z0-9_.-]*$' ]]; then
     print -u2 "ccc-run-auto: invalid identity name: $name"
     return 1
   fi
   local root="${functions_source[ccc-run-auto]:A:h:h}"
 
-  local -a docker_args cmd_args
-  local sep=${@[(i)--]}
-  docker_args=("${@[1,sep-1]}")
-  (( sep <= $# )) && cmd_args=("${@[sep+1,-1]}")
-
-  # Only resource limits and environment are accepted: anything else (-v,
-  # --network, --cap-add, --privileged, ...) could undo the isolation.
-  local -a run_args env_args env_keys env_vals
-  local i=1 a flag v line key has_memory=0 has_cpus=0
-  while (( i <= $#docker_args )); do
-    a="${docker_args[i]}"
-    case "$a" in
-      --memory=*|--cpus=*|--env=*|--env-file=*) flag="${a%%=*}"; v="${a#*=}" ;;
-      --memory|--cpus|--env|--env-file|-e)
-        flag="$a"; (( i++ ))
-        if (( i > $#docker_args )); then print -u2 "ccc-run-auto: $a needs a value"; return 1; fi
-        v="${docker_args[i]}" ;;
-      *)
-        print -u2 "ccc-run-auto: docker argument not allowed in auto mode: ${a%%=*}"
-        print -u2 "ccc-run-auto: allowed: --memory, --cpus, --env-file, -e/--env"
-        return 1 ;;
-    esac
-    case "$flag" in
-      --memory) run_args+=(--memory "$v"); has_memory=1 ;;
-      --cpus) run_args+=(--cpus "$v"); has_cpus=1 ;;
-      --env|-e)
-        env_args+=(-e "$v")
-        env_keys+=("${v%%=*}"); env_vals+=("$([[ "$v" == *=* ]] && print -r -- "=${v#*=}")") ;;
-      --env-file)
-        if [[ ! -f "$v" ]]; then print -u2 "ccc-run-auto: env file not found: $v"; return 1; fi
-        env_args+=(--env-file "${v:A}")
-        while IFS= read -r line || [[ -n "$line" ]]; do
-          line="${line##[[:space:]]#}"
-          [[ -z "$line" || "$line" == \#* ]] && continue
-          key="${${line%%=*}%%[[:space:]]#}"
-          env_keys+=("$key"); env_vals+=("$([[ "$line" == *=* ]] && print -r -- "=${line#*=}")")
-        done < "$v" ;;
-    esac
-    (( i++ ))
-  done
-  (( has_memory )) || run_args+=(--memory "${CCC_MEMORY:-4g}")
-  (( has_cpus )) || run_args+=(--cpus "${CCC_CPUS:-2}")
-
-  # Vet environment keys (never their values): reserved names and likely
-  # secrets are refused (the network isn't restricted yet), and an API key is
-  # expected.
+  # The env file must hold ANTHROPIC_API_KEY. Keys are vetted, never their
+  # values: reserved names and likely secrets are refused, since the network
+  # isn't restricted yet. A bare KEY passes the host's value through.
+  if [[ ! -f "$env_file" || ! -r "$env_file" ]]; then
+    print -u2 "ccc-run-auto: env file not found or not readable: $2"
+    return 1
+  fi
+  local line key have_api_key=0
   local -a secret_keys
-  local have_api_key=0
-  for (( i = 1; i <= $#env_keys; i++ )); do
-    key="${env_keys[i]}"
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line##[[:space:]]#}"
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    key="${${line%%=*}%%[[:space:]]#}"
     if (( ${_ccc_auto_reserved_env[(Ie)$key]} )); then
       print -u2 "ccc-run-auto: $key is set by auto mode and can't be overridden"
       return 1
-    fi
-    if [[ "$key" == ANTHROPIC_API_KEY ]]; then
-      # KEY=value sets it; a bare KEY passes it through from the host shell.
-      if [[ -n "${env_vals[i]#=}" ]] || { [[ -z "${env_vals[i]}" ]] && [[ -n "$(printenv ANTHROPIC_API_KEY)" ]]; }; then
-        have_api_key=1
-      fi
+    elif [[ "$key" == ANTHROPIC_API_KEY ]]; then
+      have_api_key=1
     elif [[ "${key:u}" == (*TOKEN*|*SECRET*|*PASSWORD*|*PASSWD*|*CREDENTIAL*|*PRIVATE*|*_KEY|*APIKEY*) ]]; then
       secret_keys+=("$key")
     fi
-  done
+  done < "$env_file"
   if (( $#secret_keys )); then
     print -u2 "ccc-run-auto: refusing to pass likely secrets into an auto capsule: ${(j:, :)${(@u)secret_keys}}"
     print -u2 "ccc-run-auto: give it an env file with only ANTHROPIC_API_KEY (and non-secret settings)"
     return 1
   fi
-  if (( ! have_api_key )) && [[ "${CCC_AUTO_ALLOW_OAUTH:-}" != 1 ]]; then
-    print -u2 "ccc-run-auto: auto mode expects ANTHROPIC_API_KEY (ideally one with a spend limit) via --env-file or -e."
-    print -u2 "ccc-run-auto: to use the identity's OAuth login instead, set CCC_AUTO_ALLOW_OAUTH=1 (untested: a refresh"
-    print -u2 "ccc-run-auto: inside the copy may log out the original identity)"
+  if (( ! have_api_key )); then
+    print -u2 "ccc-run-auto: the env file must set ANTHROPIC_API_KEY (ideally a key with a spend limit)"
     return 1
   fi
 
@@ -221,16 +184,14 @@ ccc-run-auto() {
     print -u2 "ccc-run-auto: repositories with submodules aren't supported yet"
     return 1
   fi
-  if git -C "$top" grep -q 'filter=lfs' HEAD -- ':(glob)**/.gitattributes' 2>/dev/null; then
-    print -u2 "ccc-run-auto: warning: Git LFS isn't supported; LFS files will be pointer files in the capsule"
-  fi
   branch="$(git -C "$top" symbolic-ref --quiet --short HEAD)"
 
   # The identity volume is copied, never mounted. Copying one that a running
   # capsule is writing to could give an inconsistent snapshot.
-  local src_vol="ccc-${name}-config" have_src=0
+  local src_vol="ccc-${name}-config"
+  local -a src_mount
   if docker volume inspect "$src_vol" >/dev/null 2>&1; then
-    have_src=1
+    src_mount=(-v "$src_vol:/ccc/src:ro")
     if [[ -n "$(docker ps -q --filter "volume=$src_vol")" && "${CCC_AUTO_ALLOW_LIVE_COPY:-}" != 1 ]]; then
       print -u2 "ccc-run-auto: $src_vol is in use by a running container; exit it first"
       print -u2 "ccc-run-auto: (or set CCC_AUTO_ALLOW_LIVE_COPY=1 to copy it anyway)"
@@ -243,7 +204,7 @@ ccc-run-auto() {
   local run_id="$(date +%Y%m%d-%H%M%S)-$(LC_ALL=C tr -dc 'a-z0-9' < /dev/urandom | head -c 6)"
   local run_dir="$(_ccc_auto_data_root)/$run_id"
   local repo_vol="ccc-auto-${run_id}-repo" cfg_vol="ccc-auto-${run_id}-config"
-  local agent="ccc-auto-${run_id}-agent" mount="/${top:t}"
+  local agent="ccc-auto-${run_id}-agent"
   local -a labels=(--label ccc.auto=1 --label "ccc.auto.run=$run_id")
   local agent_ran=0 agent_status=0 apply_ran=0
 
@@ -257,24 +218,18 @@ ccc-run-auto() {
     docker volume create "${labels[@]}" "$repo_vol" >/dev/null || return 1
     docker volume create "${labels[@]}" "$cfg_vol" >/dev/null || return 1
 
-    # New volumes are root-owned; hand them to node (the only capability used).
-    docker run --rm "${labels[@]}" --network none --user 0 \
-      --cap-drop=ALL --cap-add=CHOWN --security-opt=no-new-privileges \
-      -v "$repo_vol:/ccc/repo" -v "$cfg_vol:/ccc/config" \
-      --entrypoint chown ccc node:node /ccc/repo /ccc/config || return 1
-
-    local -a src_mount
-    (( have_src )) && src_mount=(-v "$src_vol:/ccc/src:ro")
+    # Seed both volumes. Each is first mounted over a node-owned dir in the
+    # image, which makes the new volume node-owned too.
     docker run --rm "${labels[@]}" --network none \
       --cap-drop=ALL --security-opt=no-new-privileges --pids-limit=128 \
       -v "$run_dir/start.bundle:/ccc/start.bundle:ro" \
-      -v "$repo_vol:/ccc/repo" -v "$cfg_vol:/ccc/config" "${src_mount[@]}" \
-      -e "CCC_START=$start" -e "CCC_BRANCH=${branch:-ccc-auto}" -e "CCC_DROP_OAUTH=$have_api_key" \
+      -v "$repo_vol:/workspace" -v "$cfg_vol:/home/node/.claude" "${src_mount[@]}" \
+      -e "CCC_START=$start" -e "CCC_BRANCH=${branch:-ccc-auto}" \
       --entrypoint sh ccc -c '
         set -e
-        [ -d /ccc/src ] && cp -a /ccc/src/. /ccc/config/
-        [ "$CCC_DROP_OAUTH" = 1 ] && rm -f /ccc/config/.credentials.json
-        cd /ccc/repo
+        [ -d /ccc/src ] && cp -a /ccc/src/. /home/node/.claude/
+        rm -f /home/node/.claude/.credentials.json
+        cd /workspace
         git init -q
         git fetch -q /ccc/start.bundle HEAD
         git checkout -q -B "$CCC_BRANCH" "$CCC_START"
@@ -294,12 +249,13 @@ ccc-run-auto() {
       --cap-drop=ALL \
       --security-opt=no-new-privileges \
       --pids-limit=512 \
-      "${run_args[@]}" \
-      -v "$repo_vol:$mount" \
-      -w "$mount" \
+      --memory "${CCC_MEMORY:-4g}" \
+      --cpus "${CCC_CPUS:-2}" \
+      -v "$repo_vol:/${top:t}" \
+      -w "/${top:t}" \
       -v "$cfg_vol:/home/node/.claude" \
       "${setup_mount[@]}" \
-      "${env_args[@]}" \
+      --env-file "$env_file" \
       ccc "${cmd_args[@]}"
     agent_status=$?
 
@@ -313,41 +269,8 @@ ccc-run-auto() {
       rm -rf "$run_dir"
     elif (( ! apply_ran )) && [[ ! -f "$run_dir/changes.patch" ]]; then
       print -u2 "ccc-run-auto: the run's changes were not exported; kept scratch volume $repo_vol"
-      print -u2 "ccc-run-auto: export and apply with: ccc-auto-apply $run_id   (ccc-auto-gc removes it)"
+      print -u2 "ccc-run-auto: export and apply with: ccc-auto-apply $run_id"
     fi
   }
   return $agent_status
-}
-
-# Remove auto-mode containers and volumes left behind by crashes or failed
-# exports. Only touches resources labeled ccc.auto, never identity volumes.
-ccc-auto-gc() {
-  emulate -L zsh
-  local -a containers volumes
-  local v
-  containers=(${(f)"$(docker ps -aq --filter label=ccc.auto=1 --filter status=exited --filter status=created --filter status=dead)"})
-  volumes=(${(f)"$(docker volume ls -q --filter label=ccc.auto=1)"})
-  if (( ! $#containers && ! $#volumes )); then
-    print "ccc-auto-gc: nothing to clean up"
-    return 0
-  fi
-  (( $#containers )) && print "Stopped auto-mode containers: $#containers"
-  (( $#volumes )) && print -rl -- "Volumes:" "  "${^volumes}
-  (( ${#${(M)volumes:#*-repo}} )) && print "Scratch (-repo) volumes may hold work that was never exported (ccc-auto-apply <run-id> exports it)."
-  if ! read -q "?Remove them? [y/N] "; then
-    print
-    return 1
-  fi
-  print
-  (( $#containers )) && docker rm -f "${containers[@]}" >/dev/null
-  for v in "${volumes[@]}"; do
-    if [[ -n "$(docker ps -q --filter "volume=$v")" ]]; then
-      print "skipping $v (in use)"
-      continue
-    fi
-    docker volume rm "$v" >/dev/null || continue
-    print "removed $v"
-    # A failed export keeps its bundle; it's useless once the volume is gone.
-    [[ "$v" == *-repo ]] && rm -f "$(_ccc_auto_data_root)/${${v#ccc-auto-}%-repo}/start.bundle"
-  done
 }

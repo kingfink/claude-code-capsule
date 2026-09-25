@@ -48,31 +48,38 @@ _ccc_auto_flag_path() {
 _ccc_auto_report() {
   emulate -L zsh
   setopt extended_glob
-  local patch="$1" line mode p reason
-  local -a numstat flagged
+  local patch="$1" line p reason
+  local -a numstat flagged modes
+  local i n=0
   if [[ ! -s "$patch" ]]; then
     print "No changes."
     return
   fi
   numstat=(${(f)"$(git apply --numstat "$patch")"})
-  for line in "${numstat[@]}"; do
-    [[ -n "$line" ]] || continue
+  # Each file's resulting mode, in patch order (the same order as --numstat), so
+  # edited executables and symlinks are flagged, not only new ones. Header lines
+  # can't be confused with hunk lines, which always start with a prefix character.
+  while IFS= read -r line; do
+    case "$line" in
+      "diff --git "*) (( n++ )); modes[n]="" ;;
+      "deleted file mode "*) modes[n]=deleted ;;
+      "new file mode "*|"new mode "*) modes[n]="${line##* }" ;;
+      "index "*" "*) [[ -z "${modes[n]}" ]] && modes[n]="${line##* }" ;;
+    esac
+  done < "$patch"
+  for (( i = 1; i <= $#numstat; i++ )); do
+    line="${numstat[i]}"
     p="${line#*$'\t'*$'\t'}"
     reason="$(_ccc_auto_flag_path "$p")"
     [[ "${line%%$'\t'*}" == "-" ]] && reason="${reason:+$reason, }binary"
+    case "${modes[i]}" in
+      100755) reason="${reason:+$reason, }executable" ;;
+      120000) reason="${reason:+$reason, }symlink" ;;
+    esac
     [[ -n "$reason" ]] && flagged+=("$p  ($reason)")
   done
-  # Executables and symlinks, from lines like " create mode 100755 path" or
-  # " mode change 100644 => 120000 path".
-  for line in "${(@f)$(git apply --summary "$patch")}"; do
-    case "$line" in
-      " create mode 100755 "*|" mode change "*" => 100755 "*)
-        flagged+=("${line##* }  (executable)") ;;
-      " create mode 120000 "*|" mode change "*" => 120000 "*)
-        flagged+=("${line##* }  (symlink)") ;;
-    esac
-  done
   print "Files changed: $#numstat"
+  (( n == $#numstat )) || print "Warning: couldn't read file modes from the patch; check executables and symlinks by hand."
   print
   if (( $#flagged )); then
     print "Flagged for close review (the whole patch is untrusted):"
@@ -114,8 +121,9 @@ ccc-auto-export() {
     print -u2 "ccc-auto-export: export failed; scratch volume $repo_vol kept"
     return 1
   }
-  mv "$run_dir/changes.patch.tmp" "$run_dir/changes.patch"
-  _ccc_auto_report "$run_dir/changes.patch" > "$run_dir/report.txt"
+  mv "$run_dir/changes.patch.tmp" "$run_dir/changes.patch" || return 1
+  _ccc_auto_report "$run_dir/changes.patch" > "$run_dir/report.txt" || return 1
+  print -r -- "exported=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$run_dir/meta"
 }
 
 ccc-run-auto() {
@@ -324,7 +332,6 @@ ccc-run-auto() {
     print -u2 "ccc-run-auto: exporting changes"
     ccc-auto-export "$run_id" || return 1
     exported=1
-    print -r -- "finished=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$run_dir/meta"
     print
     cat "$run_dir/report.txt"
     print
@@ -366,10 +373,16 @@ ccc-auto-apply() {
       return 1
     fi
   else
+    # Newest unapplied run with a patch; say which newer runs have none yet.
+    local -a unexported
     for d in "$data_root"/*(N/On); do
-      _ccc_auto_read_meta "$d" && [[ "${meta[repo]}" == "$top" ]] && { run_dir="$d"; break; }
+      _ccc_auto_read_meta "$d" && [[ "${meta[repo]}" == "$top" ]] || continue
+      [[ -f "$d/applied" ]] && continue
+      if [[ -f "$d/changes.patch" ]]; then run_dir="$d"; break; fi
+      unexported+=("${d:t}")
     done
-    if [[ -z "$run_dir" ]]; then print -u2 "ccc-auto-apply: no auto runs for $top"; return 1; fi
+    (( $#unexported )) && print -u2 "ccc-auto-apply: skipping newer run(s) with no exported patch: ${(j:, :)unexported} (see ccc-auto-export)"
+    if [[ -z "$run_dir" ]]; then print -u2 "ccc-auto-apply: no unapplied auto runs with a patch for $top"; return 1; fi
   fi
 
   if [[ -f "$run_dir/applied" ]]; then
@@ -396,6 +409,17 @@ ccc-auto-apply() {
   fi
   if [[ "$(git -C "$top" rev-parse HEAD)" != "${meta[start]}" ]]; then
     print -u2 "ccc-auto-apply: HEAD has moved since run ${meta[run_id]} started; check out ${meta[start][1,12]} first"
+    return 1
+  fi
+
+  # Once on disk, an agent-written .gitattributes makes host git (git status,
+  # diff, checkout, and possibly apply itself) run filter and diff drivers
+  # configured on this machine, e.g. git-lfs or textconv, on the agent's files.
+  # -i because macOS filesystems are usually case-insensitive.
+  if git apply --numstat "$run_dir/changes.patch" | cut -f3- | grep -qiE '(^"?|/)\.gitattributes"?$'; then
+    print -u2 "ccc-auto-apply: the patch changes .gitattributes, which can make git run filter or diff"
+    print -u2 "ccc-auto-apply: commands configured on this machine. Review it and apply it by hand if you trust it:"
+    print -u2 "  git apply $run_dir/changes.patch"
     return 1
   fi
 

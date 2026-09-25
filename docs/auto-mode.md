@@ -50,11 +50,12 @@ Each run's files live in `~/.local/share/ccc/auto-runs/<run-id>/`:
 
 ## Applying
 
-`ccc-auto-apply [run-id]` picks the latest run for the current repo. Before applying anything it requires:
+`ccc-auto-apply [run-id]` picks the newest unapplied run for the current repo that has a patch. Before applying anything it requires:
 - a clean checkout
 - HEAD at the run's starting commit
 - git 2.39.2 or newer, for `git apply`'s symlink protections
 - a passing `git apply --check`
+- no changes to any `.gitattributes`: once on disk, one could make your git run the filter and diff commands configured on your machine (git-lfs, textconv) on the agent's files. Review such a patch and apply it by hand if you trust it.
 
 It shows the report and `git apply --stat`, and applies only when you confirm. It never commits, runs, tests or pushes anything. Treat the whole patch as untrusted, especially the flagged files.
 

@@ -50,8 +50,12 @@ ccc-build() {
   docker build -t ccc "${self:A:h:h}" "$@" && docker image prune -f && docker builder prune -f
 }
 
-# Real per-identity wrappers live in an untracked file next to this one.
 _ccc_identities_dir="${${(%):-%x}:A:h}"
+
+# Experimental auto mode (ccc-run-auto, ccc-auto-apply, ccc-auto-gc).
+source "$_ccc_identities_dir/ccc-auto.sh"
+
+# Real per-identity wrappers live in an untracked file next to this one.
 [[ -f "$_ccc_identities_dir/ccc-identities.local.sh" ]] && \
   source "$_ccc_identities_dir/ccc-identities.local.sh"
 unset _ccc_identities_dir

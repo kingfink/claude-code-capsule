@@ -146,6 +146,6 @@ Then `ccc-shell acme` opens a shell for any identity.
 
 - **zsh only.** The wrapper-loading uses zsh syntax; source it from `~/.zshrc`, not bash.
 - **Updates need a rebuild.** Containers run `--rm`, so any in-container auto-update is discarded. Run `ccc-build` to get a newer Claude Code — it rebuilds the image and clears the now-dangling old image and build cache so they don't accumulate. (Identity volumes are never touched.)
-- **No git/SSH identity inside.** Capsules don't carry your git config or SSH keys, so commits and pushes from inside won't be authored or authenticated as you. Mount them yourself if you need to (e.g. add `-v ~/.gitconfig:/home/node/.gitconfig:ro`).
+- **No git/SSH identity by default.** Capsules don't carry your git config or SSH keys. For HTTPS pushes and commit authorship, set it per identity as in [GitHub access](#github-access).
 - **Light hardening only.** Capsules drop Linux capabilities, prevent new privileges, and cap process count, but the project directory is still mounted read-write.
 

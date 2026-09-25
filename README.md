@@ -114,15 +114,21 @@ GIT_COMMITTER_EMAIL=you@example.com
 
 ### Per-identity tools
 
-For client-specific CLIs, install them into the identity volume rather than the image. `~/.claude/bin` is on PATH and `XDG_CONFIG_HOME` points at `~/.claude/xdg-config`, both inside the volume, so a tool and its config persist for that identity only. From a capsule shell:
+For client-specific CLIs, install them into the identity volume rather than the image. `~/.claude/bin` is on PATH and `XDG_CONFIG_HOME` points at `~/.claude/xdg-config`, both inside the volume, so a tool and its config persist for that identity only.
+
+To install automatically, create `~/.config/ccc/<name>.setup.sh` on the host. `ccc-run` mounts it and the capsule runs it at every launch, before Claude starts, so keep it idempotent:
 
 ```
-mkdir -p ~/.claude/bin
-curl -fsSL https://raw.githubusercontent.com/exploreomni/cli/main/install.sh | sh
-mv ~/.local/bin/omni ~/.claude/bin/
+# ~/.config/ccc/acme.setup.sh
+set -euo pipefail
+if [[ ! -x ~/.claude/bin/omni ]]; then
+  mkdir -p ~/.claude/bin
+  curl -fsSL https://raw.githubusercontent.com/exploreomni/cli/main/install.sh | sh
+  mv ~/.local/bin/omni ~/.claude/bin/
+fi
 ```
 
-Tools that honor `XDG_CONFIG_HOME` (Omni does) then keep their config in the volume too. Note the volume is writable from inside the capsule, so Claude can modify these tools.
+To upgrade, delete the binary (`ccc-acme -- rm ~/.claude/bin/omni`) and the next launch reinstalls it. Tools that honor `XDG_CONFIG_HOME` (Omni does) keep their config in the volume too. Note the volume is writable from inside the capsule, so Claude can modify these tools.
 
 ### Running a shell or one-off command
 

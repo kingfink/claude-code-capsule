@@ -14,6 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends gh \
 # node:22 ships a non-root "node" user. Create its config dir, chown it, and run
 # as node so Claude never runs as root.
 RUN mkdir -p /home/node/.claude && chown -R node:node /home/node/.claude
+COPY --chmod=755 bin/ccc-entrypoint.sh /usr/local/bin/ccc-entrypoint
 USER node
 
 ENV CLAUDE_CONFIG_DIR=/home/node/.claude
@@ -26,4 +27,5 @@ ENV PATH=/home/node/.claude/bin:$PATH \
 # The launch directory is bind-mounted at /<its basename> and ccc-run sets the
 # working dir to match at runtime (docker run -w), so no WORKDIR is set here.
 
+ENTRYPOINT ["ccc-entrypoint"]
 CMD ["claude"]

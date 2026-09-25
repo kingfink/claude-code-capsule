@@ -1,5 +1,5 @@
 #!/usr/bin/env zsh
-# Integration test for ccc-run-auto and ccc-auto-apply. Needs Docker and the
+# Integration test for ccc-run-auto and ccc-auto-apply. Needs Docker, expect and the
 # ccc image (ccc-build). The "agent" is a shell command or a stub claude, so no
 # API calls are made. Everything it creates is removed at the end, also on
 # Ctrl-C.
@@ -35,14 +35,18 @@ no_leftovers() { [[ -z "$(leftovers)" ]]; }
 git_dir_sum() { (cd .git && find . -type f -exec cksum {} + | sort | cksum); }
 clean_tree() { [[ -z "$(git status --porcelain --untracked-files=all)" ]]; }
 reset_tree() { git reset -q --hard && git clean -qfdx; }
-# Run a command in a fresh zsh on a pseudo-terminal, answering $1 to prompts.
+# Run a command in a fresh zsh on a pseudo-terminal, answering $1 once the
+# [y/N] prompt appears. expect waits for the prompt; piping the answer in
+# up front loses it with BSD script on macOS.
 pty() {
-  local cmd="source ${(q)repo_root}/bin/ccc-identities.sh; $2"
-  if script --version >/dev/null 2>&1; then
-    print -r -- "$1" | script -qec "zsh -c ${(q)cmd}" /dev/null
-  else
-    print -r -- "$1" | script -q /dev/null zsh -c "$cmd"
-  fi
+  CCC_TEST_CMD="source ${(q)repo_root}/bin/ccc-identities.sh; $2" CCC_TEST_ANSWER="$1" expect -c '
+    set timeout 120
+    spawn zsh -c $env(CCC_TEST_CMD)
+    expect {
+      -re {\[y/N\] $} { send -- $env(CCC_TEST_ANSWER); exp_continue }
+      eof
+    }
+    catch wait'
 }
 cleanup() {
   local -a ids=(${(f)"$(leftovers)"})
@@ -92,7 +96,7 @@ check "answering n leaves the checkout alone" clean_tree
 out="$(pty y "ccc-auto-apply $run")"
 check "answering y applies" has "$out" "Applied."
 check "edit, delete, new and uncommitted files applied" \
-  test "$(<keep.txt)" = $'keep\nmore' -a ! -e gone.txt -a -f new.txt -a -f later.txt
+  test "$(cat keep.txt)" = $'keep\nmore' -a ! -e gone.txt -a -f new.txt -a -f later.txt
 check "binary, symlink and executable applied" \
   test "$(od -c blob.bin | head -1)" = "$(printf 'a\000b' | od -c | head -1)" -a -L link -a -x tool.sh
 reset_tree
@@ -130,7 +134,14 @@ check "secrets refused" has "$(ccc-run-auto "$ident" "$env_file" 2>&1)" "GH_TOKE
 print "HOME=/x" > "$env_file"
 check "reserved variables refused" has "$(ccc-run-auto "$ident" "$env_file" 2>&1)" "can't be overridden"
 print "FOO=1" > "$env_file"
-check "missing API key refused" has "$(ccc-run-auto "$ident" "$env_file" 2>&1)" "must set ANTHROPIC_API_KEY"
+check "missing API key refused" has "$(ccc-run-auto "$ident" "$env_file" 2>&1)" "must set a non-empty"
+print "ANTHROPIC_API_KEY=" > "$env_file"
+check "empty API key refused" has "$(ccc-run-auto "$ident" "$env_file" 2>&1)" "must set a non-empty"
+print "ANTHROPIC_API_KEY" > "$env_file"
+check "bare API key refused when the host has none" \
+  has "$(ANTHROPIC_API_KEY= ccc-run-auto "$ident" "$env_file" 2>&1)" "must set a non-empty"
+out="$(ANTHROPIC_API_KEY=from-host ccc-run-auto "$ident" "$env_file" -- sh -c 'echo "key=$ANTHROPIC_API_KEY"' 2>&1)"
+check "bare API key passes the host's value through" has "$out" "key=from-host"
 check "gate required" has "$(CCC_EXPERIMENTAL_AUTO= ccc-run-auto "$ident" "$env_file" 2>&1)" experimental
 check "malformed run id refused" has "$(ccc-auto-apply ../x 2>&1)" usage
 

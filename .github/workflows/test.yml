@@ -12,8 +12,8 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Install zsh
-        run: sudo apt-get update && sudo apt-get install -y zsh
+      - name: Install zsh and expect
+        run: sudo apt-get update && sudo apt-get install -y zsh expect
 
       - name: Syntax check
         run: |

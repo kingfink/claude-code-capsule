@@ -147,7 +147,13 @@ ccc-run-auto() {
       print -u2 "ccc-run-auto: $key is set by auto mode and can't be overridden"
       return 1
     elif [[ "$key" == ANTHROPIC_API_KEY ]]; then
-      have_api_key=1
+      # KEY=value sets it; a bare KEY passes the host's value through (and
+      # Docker drops it if the host has none).
+      if [[ "$line" == *=* ]]; then
+        [[ -n "${line#*=}" ]] && have_api_key=1
+      else
+        [[ -n "$(printenv ANTHROPIC_API_KEY)" ]] && have_api_key=1
+      fi
     elif [[ "${key:u}" == (*TOKEN*|*SECRET*|*PASSWORD*|*PASSWD*|*CREDENTIAL*|*PRIVATE*|*_KEY|*APIKEY*) ]]; then
       secret_keys+=("$key")
     fi
@@ -158,7 +164,7 @@ ccc-run-auto() {
     return 1
   fi
   if (( ! have_api_key )); then
-    print -u2 "ccc-run-auto: the env file must set ANTHROPIC_API_KEY (ideally a key with a spend limit)"
+    print -u2 "ccc-run-auto: the env file must set a non-empty ANTHROPIC_API_KEY (ideally a key with a spend limit)"
     return 1
   fi
 

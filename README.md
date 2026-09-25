@@ -140,18 +140,18 @@ Docker flags still go before the `--`, e.g. `ccc-acme --memory=8g -- bash`.
 
 ### Auto mode (experimental)
 
-`ccc-run-auto` runs `claude --dangerously-skip-permissions` on a throwaway clone of the current repo, with a throwaway copy of the identity. The only thing that comes back is a patch for you to review. **Outbound network is not restricted yet**, so it requires `CCC_EXPERIMENTAL_AUTO=1`.
+`ccc-run-auto` runs Claude in [auto mode](https://code.claude.com/docs/en/permission-modes) on a throwaway clone of the current repo, with a throwaway copy of the identity. When Claude exits, you get the changes as a patch and are asked whether to apply it. **Outbound network is not restricted yet**, so it requires `CCC_EXPERIMENTAL_AUTO=1`.
 
-Give it an env file containing only an API key, then run it from a clean checkout:
+Give it an env file containing only an API key (secret-looking variables are refused), then run it from a clean checkout:
 
 ```
 ccc-acme-auto() { CCC_EXPERIMENTAL_AUTO=1 ccc-run-auto acme-auto --env-file "$HOME/.config/ccc/acme-auto.env" "$@"; }
 
-ccc-acme-auto      # Claude works on the scratch clone
-ccc-auto-apply     # review the report, apply the patch (nothing is committed)
+ccc-acme-auto                                            # auto mode
+ccc-acme-auto -- claude --dangerously-skip-permissions   # no permission checks at all
 ```
 
-Gitignored files, submodules and LFS objects aren't carried into the clone. Commits Claude makes arrive as a single patch. `ccc-auto-gc` cleans up after crashes. Opt-in overrides: `CCC_AUTO_ALLOW_OAUTH=1` (no API key), `CCC_AUTO_ALLOW_SECRETS=1`, `CCC_AUTO_ALLOW_LIVE_COPY=1`.
+If you decline the patch, or the export fails, `ccc-auto-apply <run-id>` picks it up later. Nothing is ever committed for you. Gitignored files, submodules and LFS objects aren't carried into the clone, and Claude's commits arrive as one patch. Applying runs the patch through your git setup like any incoming change, so read the patch file directly first if the repo uses custom filters. `ccc-auto-gc` cleans up after crashes. If Claude Code rejects `--permission-mode auto`, rebuild the image with `ccc-build`. Opt-ins: `CCC_AUTO_ALLOW_OAUTH=1` (use the identity's login instead of an API key), `CCC_AUTO_ALLOW_LIVE_COPY=1`.
 
 ## Notes
 

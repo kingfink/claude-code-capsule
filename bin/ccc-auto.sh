@@ -1,7 +1,8 @@
-# Experimental auto mode: run `claude --dangerously-skip-permissions` against a
-# throwaway copy of the current git checkout and of the identity volume, and
-# bring the work back only as a patch that ccc-auto-apply applies after review.
-# Sourced by ccc-identities.sh. See "Auto mode" in the README.
+# Experimental auto mode: run Claude in auto mode (or with
+# --dangerously-skip-permissions) against a throwaway copy of the current git
+# checkout and of the identity volume, and bring the work back only as a patch
+# that you apply after review. Sourced by ccc-identities.sh; see "Auto mode" in
+# the README.
 #
 # Outbound network is NOT restricted yet, so ccc-run-auto is gated behind
 # CCC_EXPERIMENTAL_AUTO=1.
@@ -14,116 +15,93 @@ _ccc_auto_reserved_env=(
 
 _ccc_auto_data_root() { print -r -- "${XDG_DATA_HOME:-$HOME/.local/share}/ccc/auto-runs"; }
 
-# Read a run's meta file (KEY=value lines written by ccc-run-auto) into the
-# caller's associative array `meta`. Never sourced.
-_ccc_auto_read_meta() {
-  local line
-  meta=()
-  [[ -f "$1/meta" ]] || return 1
-  while IFS= read -r line; do
-    [[ "$line" == *=* ]] && meta[${line%%=*}]="${line#*=}"
-  done < "$1/meta"
-}
-
-# Classify one changed path from the patch; prints a reason if it needs a close look.
-_ccc_auto_flag_path() {
-  # Match against "/path" so */x covers x at any depth and /x only at the root.
-  case "/$1" in
-    /.github/*|/.gitlab-ci.yml|/.circleci/*|/.buildkite/*|/.husky/*|*/.pre-commit-config.yaml)
-      print "CI / git hooks" ;;
-    */.claude/*|*/CLAUDE.md|*/CLAUDE.local.md|*/.mcp.json|/.devcontainer/*|/.vscode/*|/.idea/*)
-      print "agent / editor config" ;;
-    */.envrc|*/.env|*/.env.*|*/.npmrc|*/.yarnrc*|*/.tool-versions|*/.gitattributes|*/.gitmodules|*/.gitignore)
-      print "environment / git config" ;;
-    */Dockerfile*|*/*.dockerfile|*/docker-compose*.y*ml|*/compose.y*ml|*/.dockerignore)
-      print "container config" ;;
-    */Makefile|*/GNUmakefile|*/*.mk|*/justfile|*/Justfile|*/Taskfile.y*ml|*/Rakefile|*/build.rs|*/build.gradle*|*/pom.xml|*/CMakeLists.txt)
-      print "build script" ;;
-    */package.json|*/package-lock.json|*/npm-shrinkwrap.json|*/yarn.lock|*/pnpm-lock.yaml|*/pnpm-workspace.yaml|*/bun.lock*|*/pyproject.toml|*/setup.py|*/setup.cfg|*/requirements*.txt|*/Pipfile*|*/poetry.lock|*/uv.lock|*/Gemfile*|*/*.gemspec|*/Cargo.toml|*/Cargo.lock|*/go.mod|*/go.sum|*/composer.json|*/composer.lock)
-      print "dependencies / package scripts" ;;
-  esac
-}
-
-# Write the review report for a patch: flagged paths first, then per-file stats.
-_ccc_auto_report() {
+# Export a run's changes if that hasn't happened yet, then offer to apply the
+# patch to the current checkout. ccc-run-auto calls this when the agent exits;
+# run it by hand to retry a failed export or to apply a patch you declined.
+# Never commits, runs or pushes anything.
+ccc-auto-apply() {
   emulate -L zsh
-  setopt extended_glob
-  local patch="$1" line p reason
-  local -a numstat flagged modes
-  local i n=0
-  if [[ ! -s "$patch" ]]; then
-    print "No changes."
-    return
-  fi
-  numstat=(${(f)"$(git apply --numstat "$patch")"})
-  # Each file's resulting mode, in patch order (the same order as --numstat), so
-  # edited executables and symlinks are flagged, not only new ones. Header lines
-  # can't be confused with hunk lines, which always start with a prefix character.
-  while IFS= read -r line; do
-    case "$line" in
-      "diff --git "*) (( n++ )); modes[n]="" ;;
-      "deleted file mode "*) modes[n]=deleted ;;
-      "new file mode "*|"new mode "*) modes[n]="${line##* }" ;;
-      "index "*" "*) [[ -z "${modes[n]}" ]] && modes[n]="${line##* }" ;;
-    esac
-  done < "$patch"
-  for (( i = 1; i <= $#numstat; i++ )); do
-    line="${numstat[i]}"
-    p="${line#*$'\t'*$'\t'}"
-    reason="$(_ccc_auto_flag_path "$p")"
-    [[ "${line%%$'\t'*}" == "-" ]] && reason="${reason:+$reason, }binary"
-    case "${modes[i]}" in
-      100755) reason="${reason:+$reason, }executable" ;;
-      120000) reason="${reason:+$reason, }symlink" ;;
-    esac
-    [[ -n "$reason" ]] && flagged+=("$p  ($reason)")
-  done
-  print "Files changed: $#numstat"
-  (( n == $#numstat )) || print "Warning: couldn't read file modes from the patch; check executables and symlinks by hand."
-  print
-  if (( $#flagged )); then
-    print "Flagged for close review (the whole patch is untrusted):"
-    print -rl -- "  "${^flagged}
-  else
-    print "Nothing flagged (the whole patch is still untrusted)."
-  fi
-  print
-  print "Changes (added/deleted lines, - for binary):"
-  print -rl -- "  "${^numstat}
-}
-
-# Diff a finished run's scratch repo against its starting commit into
-# <run dir>/changes.patch, then write report.txt. Also usable by hand to retry
-# an export that failed: ccc-auto-export <run-id>.
-ccc-auto-export() {
-  emulate -L zsh
-  local run_id="$1"
+  autoload -Uz is-at-least
+  local run_id="${1:-}"
   local run_dir="$(_ccc_auto_data_root)/$run_id"
-  local root="${functions_source[ccc-auto-export]:A:h:h}"
-  local -A meta
-  if [[ -z "$run_id" ]] || ! _ccc_auto_read_meta "$run_dir"; then
-    print -u2 "usage: ccc-auto-export <run-id> (runs live in $(_ccc_auto_data_root))"
+  local root="${functions_source[ccc-auto-apply]:A:h:h}"
+  local patch="$run_dir/changes.patch" repo_vol="ccc-auto-${run_id}-repo" top start
+  if [[ -z "$run_id" || ! -f "$run_dir/start" ]]; then
+    print -u2 "usage: ccc-auto-apply <run-id>   (runs live in $(_ccc_auto_data_root))"
     return 1
   fi
-  local repo_vol="ccc-auto-${run_id}-repo"
-  if ! docker volume inspect "$repo_vol" >/dev/null 2>&1 || [[ ! -f "$run_dir/start.bundle" ]]; then
-    print -u2 "ccc-auto-export: run $run_id has no scratch volume or bundle left to export"
+  start="$(<"$run_dir/start")"
+
+  if [[ ! -f "$patch" ]]; then
+    # Diff the agent's files against the starting commit in a network-less
+    # container, using a fresh .git (see ccc-auto-export.sh). The patch comes
+    # back on stdout, so the exporter never writes to the host.
+    if ! docker volume inspect "$repo_vol" >/dev/null 2>&1 || [[ ! -f "$run_dir/start.bundle" ]]; then
+      print -u2 "ccc-auto-apply: run $run_id has no patch and no scratch volume left to export"
+      return 1
+    fi
+    docker run --rm --label ccc.auto=1 --label "ccc.auto.run=$run_id" \
+      --network none --cap-drop=ALL --security-opt=no-new-privileges --pids-limit=128 \
+      -v "$run_dir/start.bundle:/ccc/start.bundle:ro" \
+      -v "$repo_vol:/ccc/agent:ro" \
+      -v "$root/bin/ccc-auto-export.sh:/ccc/export.sh:ro" \
+      -e "CCC_START=$start" \
+      --entrypoint sh ccc /ccc/export.sh > "$patch.tmp" && mv "$patch.tmp" "$patch" || {
+      rm -f "$patch.tmp"
+      print -u2 "ccc-auto-apply: export failed; kept scratch volume $repo_vol"
+      print -u2 "ccc-auto-apply: retry with: ccc-auto-apply $run_id   (ccc-auto-gc removes it)"
+      return 1
+    }
+    docker volume rm "$repo_vol" >/dev/null
+    rm -f "$run_dir/start.bundle"
+  fi
+
+  if [[ ! -s "$patch" ]]; then
+    print "ccc-auto-apply: run $run_id made no changes"
+    return 0
+  fi
+  print
+  git apply --stat --summary "$patch" || return 1
+  print "Patch: $patch"
+  print
+
+  local later="ccc-auto-apply: apply later from the repo with: ccc-auto-apply $run_id"
+  # An agent-written .gitattributes would pick which of your configured filter
+  # and diff drivers (git-lfs, textconv, ...) run on which files. -i because
+  # macOS filesystems are usually case-insensitive.
+  if git apply --numstat "$patch" | cut -f3- | grep -qiE '(^"?|/)\.gitattributes"?$'; then
+    print -u2 "ccc-auto-apply: the patch changes .gitattributes, which picks the filter and diff commands"
+    print -u2 "ccc-auto-apply: your git runs. Review it and apply it by hand if you trust it: git apply $patch"
     return 1
   fi
-  docker run --rm --label ccc.auto=1 --label "ccc.auto.run=$run_id" \
-    --network none --cap-drop=ALL --security-opt=no-new-privileges --pids-limit=128 \
-    -v "$run_dir/start.bundle:/ccc/start.bundle:ro" \
-    -v "$repo_vol:/ccc/agent:ro" \
-    -v "$root/bin/ccc-auto-export.sh:/ccc/export.sh:ro" \
-    -e "CCC_START=${meta[start]}" \
-    --entrypoint sh ccc /ccc/export.sh > "$run_dir/changes.patch.tmp" || {
-    rm -f "$run_dir/changes.patch.tmp"
-    print -u2 "ccc-auto-export: export failed; scratch volume $repo_vol kept"
+  # Older git apply can write through symlinks (CVE-2023-23946).
+  local git_version="${${(s: :)$(git version)}[3]}"
+  if ! is-at-least 2.39.2 "$git_version"; then
+    print -u2 "ccc-auto-apply: needs git 2.39.2 or newer (found $git_version)"
     return 1
-  }
-  mv "$run_dir/changes.patch.tmp" "$run_dir/changes.patch" || return 1
-  _ccc_auto_report "$run_dir/changes.patch" > "$run_dir/report.txt" || return 1
-  print -r -- "exported=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$run_dir/meta"
+  fi
+  if ! top="$(git rev-parse --show-toplevel 2>/dev/null)" || [[ "$(git -C "$top" rev-parse HEAD)" != "$start" ]]; then
+    print -u2 "ccc-auto-apply: run from the run's repository with ${start[1,12]} checked out"
+    print -u2 "$later"
+    return 1
+  fi
+  if [[ -n "$(git -C "$top" status --porcelain --untracked-files=all)" ]]; then
+    print -u2 "ccc-auto-apply: $top has uncommitted or untracked changes"
+    print -u2 "$later"
+    return 1
+  fi
+  if ! git -C "$top" apply --check "$patch"; then
+    print -u2 "ccc-auto-apply: patch does not apply cleanly"
+    return 1
+  fi
+  if ! read -q "?Apply these changes to $top? [y/N] "; then
+    print
+    print "$later"
+    return 0
+  fi
+  print
+  git -C "$top" apply "$patch" || return 1
+  print "Applied. Nothing is committed: review with git status / git diff, then commit as usual."
 }
 
 ccc-run-auto() {
@@ -189,8 +167,9 @@ ccc-run-auto() {
   (( has_memory )) || run_args+=(--memory "${CCC_MEMORY:-4g}")
   (( has_cpus )) || run_args+=(--cpus "${CCC_CPUS:-2}")
 
-  # Vet environment keys (never their values): reserved names are refused,
-  # likely secrets need CCC_AUTO_ALLOW_SECRETS=1, and an API key is expected.
+  # Vet environment keys (never their values): reserved names and likely
+  # secrets are refused (the network isn't restricted yet), and an API key is
+  # expected.
   local -a secret_keys
   local have_api_key=0
   for (( i = 1; i <= $#env_keys; i++ )); do
@@ -209,12 +188,9 @@ ccc-run-auto() {
     fi
   done
   if (( $#secret_keys )); then
-    if [[ "${CCC_AUTO_ALLOW_SECRETS:-}" != 1 ]]; then
-      print -u2 "ccc-run-auto: refusing to pass likely secrets into an auto capsule: ${(j:, :)${(@u)secret_keys}}"
-      print -u2 "ccc-run-auto: use a separate env file without them, or set CCC_AUTO_ALLOW_SECRETS=1"
-      return 1
-    fi
-    print -u2 "ccc-run-auto: warning: passing secrets into the capsule: ${(j:, :)${(@u)secret_keys}}"
+    print -u2 "ccc-run-auto: refusing to pass likely secrets into an auto capsule: ${(j:, :)${(@u)secret_keys}}"
+    print -u2 "ccc-run-auto: give it an env file with only ANTHROPIC_API_KEY (and non-secret settings)"
+    return 1
   fi
   if (( ! have_api_key )) && [[ "${CCC_AUTO_ALLOW_OAUTH:-}" != 1 ]]; then
     print -u2 "ccc-run-auto: auto mode expects ANTHROPIC_API_KEY (ideally one with a spend limit) via --env-file or -e."
@@ -269,12 +245,11 @@ ccc-run-auto() {
   local repo_vol="ccc-auto-${run_id}-repo" cfg_vol="ccc-auto-${run_id}-config"
   local agent="ccc-auto-${run_id}-agent" mount="/${top:t}"
   local -a labels=(--label ccc.auto=1 --label "ccc.auto.run=$run_id")
-  local agent_ran=0 agent_status=0 exported=0
+  local agent_ran=0 agent_status=0 apply_ran=0
 
   (umask 077 && mkdir -p "$run_dir") || return 1
-  # Written before the run so an export can be retried by hand if it fails.
-  print -rl -- "run_id=$run_id" "identity=$name" "repo=$top" "branch=$branch" "start=$start" \
-    "started=$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$run_dir/meta"
+  # ccc-auto-apply reads the starting commit from here.
+  print -r -- "$start" > "$run_dir/start"
 
   trap 'return 130' INT TERM HUP
   {
@@ -310,7 +285,7 @@ ccc-run-auto() {
     local -a setup_mount tty
     [[ -f "$setup" ]] && setup_mount=(-v "$setup:/ccc/setup.sh:ro")
     [[ -t 0 && -t 1 ]] && tty=(-t)
-    (( $#cmd_args )) || cmd_args=(claude --dangerously-skip-permissions)
+    (( $#cmd_args )) || cmd_args=(claude --permission-mode auto)
 
     print -u2 "ccc-run-auto: run $run_id on a scratch clone of $top at ${start[1,12]}"
     print -u2 "ccc-run-auto: warning: outbound network is unrestricted in this experimental build"
@@ -327,157 +302,52 @@ ccc-run-auto() {
       "${env_args[@]}" \
       ccc "${cmd_args[@]}"
     agent_status=$?
-    print -r -- "agent_exit=$agent_status" >> "$run_dir/meta"
 
-    print -u2 "ccc-run-auto: exporting changes"
-    ccc-auto-export "$run_id" || return 1
-    exported=1
-    print
-    cat "$run_dir/report.txt"
-    print
-    print "Patch: $run_dir/changes.patch"
-    print "Review it, then apply from $top with: ccc-auto-apply"
+    apply_ran=1
+    ccc-auto-apply "$run_id" || return 1
   } always {
     docker rm -f "$agent" >/dev/null 2>&1
     docker volume rm "$cfg_vol" >/dev/null 2>&1
-    if (( exported || ! agent_ran )); then
+    if (( ! agent_ran )); then
       docker volume rm "$repo_vol" >/dev/null 2>&1
-      rm -f "$run_dir/start.bundle"
-      (( agent_ran )) || rm -rf "$run_dir"
-    else
+      rm -rf "$run_dir"
+    elif (( ! apply_ran )) && [[ ! -f "$run_dir/changes.patch" ]]; then
       print -u2 "ccc-run-auto: the run's changes were not exported; kept scratch volume $repo_vol"
-      print -u2 "ccc-run-auto: retry with: ccc-auto-export $run_id   (ccc-auto-gc removes it)"
+      print -u2 "ccc-run-auto: export and apply with: ccc-auto-apply $run_id   (ccc-auto-gc removes it)"
     fi
   }
   return $agent_status
-}
-
-# Apply a run's patch to the current checkout after showing the review report.
-# Picks the latest run for this repository unless a run id is given. Never
-# commits, runs or pushes anything.
-ccc-auto-apply() {
-  emulate -L zsh
-  autoload -Uz is-at-least
-  local top run_dir d
-  local -A meta
-  if ! top="$(git rev-parse --show-toplevel 2>/dev/null)"; then
-    print -u2 "ccc-auto-apply: not inside a git repository"
-    return 1
-  fi
-  local data_root="$(_ccc_auto_data_root)"
-  if [[ -n "${1:-}" ]]; then
-    run_dir="$data_root/$1"
-    if ! _ccc_auto_read_meta "$run_dir"; then print -u2 "ccc-auto-apply: no run $1"; return 1; fi
-    if [[ "${meta[repo]}" != "$top" ]]; then
-      print -u2 "ccc-auto-apply: run $1 was for ${meta[repo]}, not $top"
-      return 1
-    fi
-  else
-    # Newest unapplied run with a patch; say which newer runs have none yet.
-    local -a unexported
-    for d in "$data_root"/*(N/On); do
-      _ccc_auto_read_meta "$d" && [[ "${meta[repo]}" == "$top" ]] || continue
-      [[ -f "$d/applied" ]] && continue
-      if [[ -f "$d/changes.patch" ]]; then run_dir="$d"; break; fi
-      unexported+=("${d:t}")
-    done
-    (( $#unexported )) && print -u2 "ccc-auto-apply: skipping newer run(s) with no exported patch: ${(j:, :)unexported} (see ccc-auto-export)"
-    if [[ -z "$run_dir" ]]; then print -u2 "ccc-auto-apply: no unapplied auto runs with a patch for $top"; return 1; fi
-  fi
-
-  if [[ -f "$run_dir/applied" ]]; then
-    print -u2 "ccc-auto-apply: run ${meta[run_id]} was already applied"
-    return 1
-  fi
-  if [[ ! -f "$run_dir/changes.patch" ]]; then
-    print -u2 "ccc-auto-apply: run ${meta[run_id]} has no exported patch (try: ccc-auto-export ${meta[run_id]})"
-    return 1
-  fi
-  if [[ ! -s "$run_dir/changes.patch" ]]; then
-    print "ccc-auto-apply: run ${meta[run_id]} made no changes"
-    return 0
-  fi
-  # Older git apply can write through symlinks (CVE-2023-23946).
-  local git_version="${${(s: :)$(git version)}[3]}"
-  if ! is-at-least 2.39.2 "$git_version"; then
-    print -u2 "ccc-auto-apply: needs git 2.39.2 or newer (found $git_version)"
-    return 1
-  fi
-  if [[ -n "$(git -C "$top" status --porcelain --untracked-files=all)" ]]; then
-    print -u2 "ccc-auto-apply: $top has uncommitted or untracked changes; commit or stash them first"
-    return 1
-  fi
-  if [[ "$(git -C "$top" rev-parse HEAD)" != "${meta[start]}" ]]; then
-    print -u2 "ccc-auto-apply: HEAD has moved since run ${meta[run_id]} started; check out ${meta[start][1,12]} first"
-    return 1
-  fi
-
-  # Once on disk, an agent-written .gitattributes makes host git (git status,
-  # diff, checkout, and possibly apply itself) run filter and diff drivers
-  # configured on this machine, e.g. git-lfs or textconv, on the agent's files.
-  # -i because macOS filesystems are usually case-insensitive.
-  if git apply --numstat "$run_dir/changes.patch" | cut -f3- | grep -qiE '(^"?|/)\.gitattributes"?$'; then
-    print -u2 "ccc-auto-apply: the patch changes .gitattributes, which can make git run filter or diff"
-    print -u2 "ccc-auto-apply: commands configured on this machine. Review it and apply it by hand if you trust it:"
-    print -u2 "  git apply $run_dir/changes.patch"
-    return 1
-  fi
-
-  print "Run ${meta[run_id]} (identity ${meta[identity]}, started ${meta[started]}, exit ${meta[agent_exit]:-?})"
-  print
-  cat "$run_dir/report.txt"
-  print
-  git -C "$top" apply --stat --summary "$run_dir/changes.patch" || return 1
-  if ! git -C "$top" apply --check "$run_dir/changes.patch"; then
-    print -u2 "ccc-auto-apply: patch does not apply cleanly"
-    return 1
-  fi
-  print
-  print "Full patch: $run_dir/changes.patch"
-  if ! read -q "?Apply these changes to $top? [y/N] "; then
-    print
-    return 1
-  fi
-  print
-  git -C "$top" apply "$run_dir/changes.patch" || return 1
-  date -u +%Y-%m-%dT%H:%M:%SZ > "$run_dir/applied"
-  print "Applied. Nothing is committed: review with git status / git diff, then commit and push as usual."
 }
 
 # Remove auto-mode containers and volumes left behind by crashes or failed
 # exports. Only touches resources labeled ccc.auto, never identity volumes.
 ccc-auto-gc() {
   emulate -L zsh
-  local -a containers running volumes unexported
-  local v run_dir
+  local -a containers volumes
+  local v
   containers=(${(f)"$(docker ps -aq --filter label=ccc.auto=1 --filter status=exited --filter status=created --filter status=dead)"})
-  running=(${(f)"$(docker ps -q --filter label=ccc.auto=1)"})
-  (( $#containers )) && docker rm -f "${containers[@]}" >/dev/null
-  (( $#running )) && print "ccc-auto-gc: leaving ${#running} running auto container(s) and their volumes alone"
-
-  # A scratch repo volume holds unexported work unless its run has a patch.
   volumes=(${(f)"$(docker volume ls -q --filter label=ccc.auto=1)"})
-  for v in ${(M)volumes:#ccc-auto-*-repo}; do
-    run_dir="$(_ccc_auto_data_root)/${${v#ccc-auto-}%-repo}"
-    [[ -f "$run_dir/changes.patch" ]] || unexported+=("$v")
-  done
-  if (( $#unexported )); then
-    print "Scratch volumes with unexported work: ${(j:, :)unexported}"
-    if read -q "?Delete them? [y/N] "; then
-      print
-    else
-      print
-      volumes=(${volumes:|unexported})
-    fi
+  if (( ! $#containers && ! $#volumes )); then
+    print "ccc-auto-gc: nothing to clean up"
+    return 0
   fi
+  (( $#containers )) && print "Stopped auto-mode containers: $#containers"
+  (( $#volumes )) && print -rl -- "Volumes:" "  "${^volumes}
+  (( ${#${(M)volumes:#*-repo}} )) && print "Scratch (-repo) volumes may hold work that was never exported (ccc-auto-apply <run-id> exports it)."
+  if ! read -q "?Remove them? [y/N] "; then
+    print
+    return 1
+  fi
+  print
+  (( $#containers )) && docker rm -f "${containers[@]}" >/dev/null
   for v in "${volumes[@]}"; do
-    [[ -n "$(docker ps -q --filter "volume=$v")" ]] && continue
-    docker volume rm "$v" >/dev/null && print "removed $v"
-  done
-
-  # Bundles are only needed while a scratch volume exists to export.
-  for run_dir in "$(_ccc_auto_data_root)"/*(N/); do
-    [[ -f "$run_dir/start.bundle" ]] || continue
-    docker volume inspect "ccc-auto-${run_dir:t}-repo" >/dev/null 2>&1 || rm -f "$run_dir/start.bundle"
+    if [[ -n "$(docker ps -q --filter "volume=$v")" ]]; then
+      print "skipping $v (in use)"
+      continue
+    fi
+    docker volume rm "$v" >/dev/null || continue
+    print "removed $v"
+    # A failed export keeps its bundle; it's useless once the volume is gone.
+    [[ "$v" == *-repo ]] && rm -f "$(_ccc_auto_data_root)/${${v#ccc-auto-}%-repo}/start.bundle"
   done
 }

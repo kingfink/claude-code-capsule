@@ -1,0 +1,27 @@
+name: test
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  auto-mode:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install zsh
+        run: sudo apt-get update && sudo apt-get install -y zsh
+
+      - name: Syntax check
+        run: |
+          for f in bin/ccc-identities.sh bin/ccc-auto.sh test/auto.zsh; do zsh -n "$f"; done
+          for f in bin/ccc-entrypoint.sh bin/ccc-auto-export.sh; do sh -n "$f"; done
+
+      - name: Build image
+        run: docker build -t ccc .
+
+      - name: Integration test
+        run: zsh test/auto.zsh

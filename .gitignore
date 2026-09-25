@@ -1,3 +1,4 @@
 .claude/*
 
 bin/ccc-identities.local.sh
+setup/*.sh

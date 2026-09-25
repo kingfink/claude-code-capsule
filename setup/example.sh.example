@@ -1,0 +1,13 @@
+# Copy to setup/<name>.sh (e.g. setup/acme.sh) for an identity. That file is
+# gitignored. It runs inside the capsule at every launch, before Claude starts,
+# so keep it idempotent: only install what's missing. Don't put secrets here;
+# use the identity's env file.
+set -euo pipefail
+
+# Example: Omni CLI into the identity volume (~/.claude/bin is on PATH).
+# To upgrade, delete the binary (ccc-acme -- rm ~/.claude/bin/omni).
+if [[ ! -x ~/.claude/bin/omni ]]; then
+  mkdir -p ~/.claude/bin
+  curl -fsSL https://raw.githubusercontent.com/exploreomni/cli/main/install.sh | sh
+  mv ~/.local/bin/omni ~/.claude/bin/
+fi

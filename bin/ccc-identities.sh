@@ -10,7 +10,7 @@ ccc-run() {
   docker_args=("${@[1,sep-1]}")
   (( sep <= $# )) && cmd_args=("${@[sep+1,-1]}")
   # A per-identity setup script, if present, runs at every launch (see ccc-entrypoint).
-  local setup="$HOME/.config/ccc/$name.setup.sh"
+  local setup="${functions_source[ccc-run]:A:h:h}/setup/$name.sh"
   [[ -f "$setup" ]] && docker_args=(-v "$setup:/ccc/setup.sh:ro" "${docker_args[@]}")
   local -a resource_args
   local arg has_memory_arg=0 has_cpus_arg=0

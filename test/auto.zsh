@@ -1,8 +1,8 @@
 #!/usr/bin/env zsh
-# Integration test for ccc-run-auto and ccc-auto-apply. Needs Docker, expect and the
-# ccc image (ccc-build). The "agent" is a shell command or a stub claude, so no
-# API calls are made. Everything it creates is removed at the end, also on
-# Ctrl-C.
+# Integration test for ccc-run-auto and ccc-auto-apply. Needs Docker, expect,
+# the ccc image (ccc-build) and internet access (it fetches example.com through
+# the proxy). The "agent" is a shell command or a stub claude, so no API calls
+# are made. Everything it creates is removed at the end, also on Ctrl-C.
 #
 #   zsh test/auto.zsh
 
@@ -11,7 +11,8 @@ setopt extended_glob
 
 repo_root="${0:A:h:h}"
 tmp="$(mktemp -d)"
-export XDG_DATA_HOME="$tmp/data" CCC_EXPERIMENTAL_AUTO=1
+export XDG_DATA_HOME="$tmp/data"
+unset CCC_AUTO_ALLOW_HOSTS
 ident="ccctest-$$"
 src_vol="ccc-$ident-config"
 env_file="$tmp/auto.env"
@@ -24,11 +25,12 @@ check() {  # check <description> <command...>
 has() { [[ "$1" == *"$2"* ]]; }
 runs_dir() { print -r -- "$XDG_DATA_HOME/ccc/auto-runs"; }
 last_run() { print -r -- "$(runs_dir)"/*(N/om[1]:t); }
-leftovers() {  # labeled containers and volumes belonging to this test's runs
+leftovers() {  # labeled containers, volumes and networks belonging to this test's runs
   local d
   for d in "$(runs_dir)"/*(N/:t); do
     docker ps -aq --filter "label=ccc.auto.run=$d"
     docker volume ls -q --filter "label=ccc.auto.run=$d"
+    docker network ls -q --filter "label=ccc.auto.run=$d"
   done
 }
 no_leftovers() { [[ -z "$(leftovers)" ]]; }
@@ -50,7 +52,7 @@ pty() {
 }
 cleanup() {
   local -a ids=(${(f)"$(leftovers)"})
-  (( $#ids )) && { docker rm -f "${ids[@]}"; docker volume rm -f "${ids[@]}"; } >/dev/null 2>&1
+  (( $#ids )) && { docker rm -f "${ids[@]}"; docker volume rm -f "${ids[@]}"; docker network rm "${ids[@]}"; } >/dev/null 2>&1
   docker volume rm -f "$src_vol" >/dev/null 2>&1
   rm -rf "$tmp"
 }
@@ -103,6 +105,30 @@ reset_tree
 out="$(ccc-run-auto "$ident" "$env_file" -- sh -c 'test ! -e ~/.claude/bin/gh && echo identity-clean' 2>&1)"
 check "planted file didn't persist in the identity" has "$out" identity-clean
 
+print "== network"
+out="$(ccc-run-auto "$ident" "$env_file" -- sh -c '
+  test -z "$ANTHROPIC_API_KEY" && echo no-api-key
+  echo "base=$ANTHROPIC_BASE_URL"
+  getent hosts example.com >/dev/null || echo no-dns
+  curl -sm 5 --noproxy "*" https://example.com >/dev/null || echo no-direct-route
+  curl -sm 10 https://example.com >/dev/null || echo proxy-refused
+  echo "files=$(curl -s -o /dev/null -w "%{http_code}" -X POST "$ANTHROPIC_BASE_URL/v1/files")"' 2>&1)"
+check "agent never gets the API key" has "$out" no-api-key
+check "API calls go to the proxy" has "$out" "base=http://ccc-proxy:8080"
+check "no DNS for outside names" has "$out" no-dns
+check "no direct route out" has "$out" no-direct-route
+check "hosts off the allowlist refused" has "$out" proxy-refused
+check "  and reported" has "$out" "blocked: example.com:443"
+check "  and logged" grep -q "deny CONNECT example.com:443" "$(runs_dir)/$(last_run)/proxy.log"
+check "non-API requests refused" has "$out" "files=403"
+out="$(CCC_AUTO_ALLOW_HOSTS=example.com ccc-run-auto "$ident" "$env_file" -- sh -c 'curl -fsSm 20 -o /dev/null https://example.com && echo allowed-ok' 2>&1)"
+check "allowlisted host reachable" has "$out" allowed-ok
+check "bad allowlist entry refused" \
+  has "$(CCC_AUTO_ALLOW_HOSTS='example.com http://x.com' ccc-run-auto "$ident" "$env_file" 2>&1)" "CCC_AUTO_ALLOW_HOSTS entry"
+check "direct API access refused" \
+  has "$(CCC_AUTO_ALLOW_HOSTS='*.Anthropic.com' ccc-run-auto "$ident" "$env_file" 2>&1)" "other API keys"
+check "nothing left behind" no_leftovers
+
 print "== failed export, then retry"
 out="$(ccc-run-auto "$ident" "$env_file" -- sh -c 'echo x > locked; chmod 000 locked' 2>&1)"
 run="$(last_run)"
@@ -133,6 +159,8 @@ print "GH_TOKEN=x" >> "$env_file"
 check "secrets refused" has "$(ccc-run-auto "$ident" "$env_file" 2>&1)" "GH_TOKEN"
 print "HOME=/x" > "$env_file"
 check "reserved variables refused" has "$(ccc-run-auto "$ident" "$env_file" 2>&1)" "can't be overridden"
+print "ANTHROPIC_AUTH_TOKEN=x" > "$env_file"
+check "auth token refused" has "$(ccc-run-auto "$ident" "$env_file" 2>&1)" "can't be overridden"
 print "FOO=1" > "$env_file"
 check "missing API key refused" has "$(ccc-run-auto "$ident" "$env_file" 2>&1)" "must set a non-empty"
 print "ANTHROPIC_API_KEY=" > "$env_file"
@@ -140,9 +168,8 @@ check "empty API key refused" has "$(ccc-run-auto "$ident" "$env_file" 2>&1)" "m
 print "ANTHROPIC_API_KEY" > "$env_file"
 check "bare API key refused when the host has none" \
   has "$(ANTHROPIC_API_KEY= ccc-run-auto "$ident" "$env_file" 2>&1)" "must set a non-empty"
-out="$(ANTHROPIC_API_KEY=from-host ccc-run-auto "$ident" "$env_file" -- sh -c 'echo "key=$ANTHROPIC_API_KEY"' 2>&1)"
-check "bare API key passes the host's value through" has "$out" "key=from-host"
-check "gate required" has "$(CCC_EXPERIMENTAL_AUTO= ccc-run-auto "$ident" "$env_file" 2>&1)" experimental
+out="$(ANTHROPIC_API_KEY=from-host ccc-run-auto "$ident" "$env_file" -- sh -c 'env | grep -q from-host || echo ran-without-key' 2>&1)"
+check "bare API key goes to the proxy, not the agent" has "$out" ran-without-key
 check "malformed run id refused" has "$(ccc-auto-apply ../x 2>&1)" usage
 
 check "nothing left behind at the end" no_leftovers

@@ -138,20 +138,36 @@ ccc-acme -- bash -c 'which omni && gh auth status'
 
 Docker flags still go before the `--`, e.g. `ccc-acme --memory=8g -- bash`.
 
-### Auto mode (experimental)
+### Auto mode
 
-`ccc-run-auto` runs Claude in [auto mode](https://code.claude.com/docs/en/permission-modes) on a throwaway clone of the current repo, with a throwaway copy of the identity. When Claude exits, you get the changes as a patch and are asked whether to apply it. **Outbound network is not restricted yet**, so it requires `CCC_EXPERIMENTAL_AUTO=1`. Rebuild the image with `ccc-build` first.
+`ccc-run-auto` runs Claude in [auto mode](https://code.claude.com/docs/en/permission-modes) on a throwaway clone of the current repo, with a throwaway copy of the identity, on a network where it can reach only the Anthropic API. When Claude exits, you get the changes as a patch and are asked whether to apply it. Rebuild the image with `ccc-build` first.
 
 It takes an env file that must set `ANTHROPIC_API_KEY`; the identity's OAuth login is not used, and secret-looking variables are refused. Run it from a clean checkout:
 
 ```
-ccc-acme-auto() { CCC_EXPERIMENTAL_AUTO=1 ccc-run-auto acme-auto "$HOME/.config/ccc/acme-auto.env" "$@"; }
+ccc-acme-auto() { ccc-run-auto acme-auto "$HOME/.config/ccc/acme-auto.env" "$@"; }
 
 ccc-acme-auto                                            # auto mode
 ccc-acme-auto -- claude --dangerously-skip-permissions   # no permission checks at all
 ```
 
-If you decline the patch, or the export fails, `ccc-auto-apply <run-id>` picks it up later. Nothing is ever committed for you. Gitignored files and submodules aren't carried into the clone, LFS files arrive as pointers, and Claude's commits arrive as one patch. Applying runs the patch through your git setup like any incoming change, so read it first if the repo uses custom filters. `CCC_MEMORY` and `CCC_CPUS` apply as for `ccc-run`. After a crash, remove leftovers with `docker volume rm $(docker volume ls -q --filter label=ccc.auto=1)`.
+If you decline the patch, or the export fails, `ccc-auto-apply <run-id>` picks it up later. Nothing is ever committed for you. Gitignored files and submodules aren't carried into the clone, LFS files arrive as pointers, and Claude's commits arrive as one patch. Applying runs the patch through your git setup like any incoming change, so read it first if the repo uses custom filters. `CCC_MEMORY` and `CCC_CPUS` apply as for `ccc-run`. After a crash, remove leftovers with:
+
+```
+docker rm -f $(docker ps -aq --filter label=ccc.auto=1)
+docker network rm $(docker network ls -q --filter label=ccc.auto=1)
+docker volume rm $(docker volume ls -q --filter label=ccc.auto=1)
+```
+
+**Network.** Claude's container sits on an internal Docker network with no route out and no outside DNS. Its only way out is a proxy container that holds the API key: Claude calls the API through it with a placeholder token and the proxy adds the real key, so the key never enters Claude's container. The proxy forwards only message and token-counting requests, and refuses the API features that fetch a URL on the caller's behalf (the MCP connector, the web fetch tool, images and documents given by URL). Web search still works. Everything else is blocked: WebFetch, remote MCP servers, package registries, and downloads in the identity's setup script. After each run, `ccc-run-auto` lists the hosts it blocked, and the run's `proxy.log` has every decision. Claude Code's own startup checks (`downloads.claude.ai`, `github.com`) always show up there and are harmless.
+
+To let Claude reach more hosts over HTTPS, list them in `CCC_AUTO_ALLOW_HOSTS`, as exact names or `*.suffix`, separated by spaces or commas. For example, to install npm dependencies:
+
+```
+ccc-acme-auto() { CCC_AUTO_ALLOW_HOSTS=registry.npmjs.org ccc-run-auto acme-auto "$HOME/.config/ccc/acme-auto.env" "$@"; }
+```
+
+Every host you allow is a way out: a prompt-injected run could publish your code to npm with a token planted in the injection, or push it to someone else's GitHub repo. Allow only what the task needs. Also keep in mind that whatever Claude sends the model goes to Anthropic under your key, and that a future API feature that fetches URLs server-side won't be blocked until the proxy knows about it.
 
 ## Notes
 

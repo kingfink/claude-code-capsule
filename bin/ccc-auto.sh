@@ -1,6 +1,7 @@
-# Auto mode: run Claude in auto mode (or with --dangerously-skip-permissions)
-# against a throwaway copy of the current git checkout and of the identity
-# volume, and bring the work back only as a patch that you apply after review.
+# Experimental auto mode: run Claude in auto mode (or with
+# --dangerously-skip-permissions) against a throwaway copy of the current git
+# checkout and of the identity volume, and bring the work back only as a patch
+# that you apply after review.
 # The agent sits on an internal Docker network whose only way out is an egress
 # proxy (ccc-auto-proxy.js) that holds the API key. Sourced by
 # ccc-identities.sh; see "Auto mode" in the README.

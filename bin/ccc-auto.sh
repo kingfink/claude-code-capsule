@@ -15,6 +15,18 @@ _ccc_auto_reserved_env=(
 
 _ccc_auto_data_root() { print -r -- "${XDG_DATA_HOME:-$HOME/.local/share}/ccc/auto-runs"; }
 
+# Every temporary container gets the same ownership labels and baseline
+# hardening. Callers add the few settings that actually vary (network, process
+# limit, mounts, and command).
+_ccc_auto_docker() {
+  local run_id="$1"
+  shift
+  docker run --rm \
+    --label ccc.auto=1 --label "ccc.auto.run=$run_id" \
+    --cap-drop=ALL --security-opt=no-new-privileges \
+    "$@"
+}
+
 # Export a run's changes if that hasn't happened yet, then offer to apply the
 # patch to the current checkout. ccc-run-auto calls this when the agent exits;
 # run it by hand to retry a failed export or to apply a patch you declined.
@@ -44,8 +56,7 @@ ccc-auto-apply() {
       print -u2 "ccc-auto-apply: run $run_id has no patch and no scratch volume left to export"
       return 1
     fi
-    docker run --rm --label ccc.auto=1 --label "ccc.auto.run=$run_id" \
-      --network none --cap-drop=ALL --security-opt=no-new-privileges --pids-limit=128 \
+    _ccc_auto_docker "$run_id" --network none --pids-limit=128 \
       -v "$run_dir/start.bundle:/ccc/start.bundle:ro" \
       -v "$repo_vol:/ccc/agent:ro" \
       -v "$root/bin/ccc-auto-export.sh:/ccc/export.sh:ro" \
@@ -241,8 +252,7 @@ ccc-run-auto() {
 
     # Seed both volumes. Each is first mounted over a node-owned dir in the
     # image, which makes the new volume node-owned too.
-    docker run --rm "${labels[@]}" --network none \
-      --cap-drop=ALL --security-opt=no-new-privileges --pids-limit=128 \
+    _ccc_auto_docker "$run_id" --network none --pids-limit=128 \
       -v "$run_dir/start.bundle:/ccc/start.bundle:ro" \
       -v "$repo_vol:/workspace" -v "$cfg_vol:/home/node/.claude" "${src_mount[@]}" \
       -e "CCC_START=$start" -e "CCC_BRANCH=${branch:-ccc-auto}" \
@@ -262,9 +272,9 @@ ccc-run-auto() {
     # It gets the API key from its environment, never from argv.
     docker network create --internal "${labels[@]}" "$int_net" >/dev/null || return 1
     docker network create "${labels[@]}" "$egress_net" >/dev/null || return 1
-    ANTHROPIC_API_KEY="$api_key" docker run -d --name "$proxy" "${labels[@]}" \
+    ANTHROPIC_API_KEY="$api_key" _ccc_auto_docker "$run_id" -d --name "$proxy" \
       --network "$int_net" --network-alias ccc-proxy \
-      --cap-drop=ALL --security-opt=no-new-privileges --read-only \
+      --read-only \
       --pids-limit=64 --memory 512m \
       -v "$root/bin/ccc-auto-proxy.js:/ccc/proxy.js:ro" \
       -e ANTHROPIC_API_KEY -e "CCC_AUTO_ALLOW_HOSTS=${(j: :)allow_hosts}" \
@@ -298,9 +308,7 @@ ccc-run-auto() {
     print -u2 "ccc-run-auto: run $run_id on a scratch clone of $top at ${start[1,12]}"
     print -u2 "ccc-run-auto: network: the Anthropic API${allow_hosts:+, and HTTPS to ${(j:, :)allow_hosts}}"
     agent_ran=1
-    docker run -i "${tty[@]}" --rm --name "$agent" "${labels[@]}" \
-      --cap-drop=ALL \
-      --security-opt=no-new-privileges \
+    _ccc_auto_docker "$run_id" -i "${tty[@]}" --name "$agent" \
       --pids-limit=512 \
       --memory "${CCC_MEMORY:-4g}" \
       --cpus "${CCC_CPUS:-2}" \

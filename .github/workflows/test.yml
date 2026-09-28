@@ -23,5 +23,8 @@ jobs:
       - name: Build image
         run: docker build -t ccc .
 
+      - name: Proxy unit tests
+        run: docker run --rm --network none -v "$PWD:/src:ro" -w /src --entrypoint node ccc --test 'test/*.test.js'
+
       - name: Integration test
         run: zsh test/auto.zsh

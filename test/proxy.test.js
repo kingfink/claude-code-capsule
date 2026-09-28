@@ -135,6 +135,12 @@ test('refuses bodies it can\'t check', async () => {
   assert.equal(received.length, 0);
 });
 
+test('answers oversized bodies with 413 instead of dropping the connection', async () => {
+  const res = await send('POST', '/v1/messages', 'x'.repeat(33 * 1024 * 1024));
+  assert.equal(res.status, 413);
+  assert.equal(received.length, 0);
+});
+
 test('refuses plain HTTP proxy requests', async () => {
   assert.match(await raw('GET http://allowed.example/ HTTP/1.1\r\nHost: allowed.example\r\n\r\n'), / 403 /);
 });

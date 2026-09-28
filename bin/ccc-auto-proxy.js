@@ -63,19 +63,17 @@ function createProxy({ apiKey, allowHosts, upstream = 'https://api.anthropic.com
     const encoding = req.headers['content-encoding'];
     if (encoding && encoding !== 'identity') return deny(415, 'compressed request bodies are not supported');
 
+    // Past the limit, keep reading but stop buffering, and answer once the
+    // body is in: closing the socket early can reset the connection before the
+    // client reads the 413. Node's request timeout bounds how long this takes.
     const chunks = [];
     let size = 0;
     req.on('data', chunk => {
       size += chunk.length;
-      if (size > MAX_BODY) {
-        deny(413, 'request body too large');
-        req.destroy();
-      } else {
-        chunks.push(chunk);
-      }
+      if (size <= MAX_BODY) chunks.push(chunk);
     });
     req.on('end', () => {
-      if (res.headersSent) return;
+      if (size > MAX_BODY) return deny(413, 'request body too large');
       let body;
       try {
         body = JSON.parse(Buffer.concat(chunks).toString('utf8'));

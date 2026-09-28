@@ -140,7 +140,7 @@ Docker flags still go before the `--`, e.g. `ccc-acme --memory=8g -- bash`.
 
 ### Auto mode
 
-`ccc-run-auto` runs Claude in [auto mode](https://code.claude.com/docs/en/permission-modes) on a throwaway clone of the current repo, with a throwaway copy of the identity, on a network where it can reach only the Anthropic API. When Claude exits, you get the changes as a patch and are asked whether to apply it. Rebuild the image with `ccc-build` first.
+`ccc-run-auto` runs Claude in [auto mode](https://code.claude.com/docs/en/permission-modes) on a throwaway clone of the current repo, with a throwaway copy of the identity, on a network where it can reach only the Anthropic API. When Claude exits, you get the changes as a patch and are asked whether to apply it. If your image predates auto mode, rebuild it with `ccc-build` first.
 
 It takes an env file that must set `ANTHROPIC_API_KEY`; the identity's OAuth login is not used, and secret-looking variables are refused. Run it from a clean checkout:
 

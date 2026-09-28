@@ -129,6 +129,22 @@ check "direct API access refused" \
   has "$(CCC_AUTO_ALLOW_HOSTS='*.Anthropic.com' ccc-run-auto "$ident" "$env_file" 2>&1)" "other API keys"
 check "nothing left behind" no_leftovers
 
+print "== proxy dies mid-run"
+prev="$(last_run)"
+ccc-run-auto "$ident" "$env_file" -- sleep 15 >/dev/null 2>&1 &
+bg=$!
+proxy=
+for i in {1..60}; do
+  run="$(last_run)"
+  [[ "$run" != "$prev" ]] && proxy="$(docker ps -q --filter "label=ccc.auto.run=$run" --filter name=proxy)"
+  [[ -n "$proxy" ]] && break
+  sleep 0.5
+done
+[[ -n "$proxy" ]] && docker kill "$proxy" >/dev/null
+wait $bg
+check "proxy log kept when the proxy dies" grep -q '^listening' "$(runs_dir)/$run/proxy.log"
+check "nothing left behind" no_leftovers
+
 print "== failed export, then retry"
 out="$(ccc-run-auto "$ident" "$env_file" -- sh -c 'echo x > locked; chmod 000 locked' 2>&1)"
 run="$(last_run)"
